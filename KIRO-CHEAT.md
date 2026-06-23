@@ -4,8 +4,8 @@
 > 표기: `[VERIFIED]` 공식문서 확인 / `[ASSUMPTION]` 현장 첫 30분에 확인.
 
 ## 0. 단 하나만 기억해라
-**Kiro = VS Code + 사이드바에 Claude 에이전트.** 너가 매일 쓰는 Claude Code랑 똑같다.
-메뉴 못 외워도 된다 — **오른쪽 채팅창에 한국어로 시키면 걔가 파일 고치고 터미널 돌린다.** `[VERIFIED: Kiro agentic chat, kiro.dev]`
+**Kiro ≈ VS Code(Code OSS 포크) + 사이드바에 AI 에이전트.** 운영감각은 Claude Code와 비슷하다(동일하다는 보장은 아님 — 단축키/메뉴는 다를 수 있음).
+메뉴 못 외워도 된다 — **오른쪽 채팅창에 한국어로 시키면 걔가 파일 고치고 터미널 돌린다.** `[VERIFIED: Kiro = agentic IDE w/ chat, kiro.dev] [ASSUMPTION: "Claude Code와 동일"은 단순화]`
 그리고 **우리 키트는 순수 Python이라 Kiro 없이 그냥 터미널로도 된다.** Kiro는 편해서 쓰는 거지 필수 아님.
 
 ## 1. 안 버벅대는 작업 루프 (현장 내내 이 4줄만 반복)
@@ -21,7 +21,8 @@
 - 하단 터미널 열기: **Ctrl+`** (백틱) → `source .venv/bin/activate`
 - 막히면: 오른쪽 채팅에 **"이 폴더 열고 .venv 활성화해줘"** 라고 시켜라. 그게 Kiro의 존재 이유다.
 
-## 3. AgentCore 배포 = 터미널 명령 (GUI 클릭 아님) `[VERIFIED: docs.aws.amazon.com/bedrock-agentcore CLI]`
+## 3. AgentCore 배포 = 터미널 명령 (GUI 클릭 아님) `[ASSUMPTION: 아래 정확한 플래그/하위명령은 docs 기반 — 현장 CLI로 확인]`
+> CLI 자체와 "터미널 배포" 흐름은 공식문서 확인됨. 단 `configure -e` / `--disable-memory` / `dev` / `invoke` / "CodeZip·Docker 불필요"의 **정확한 철자·옵션은 버전마다 다를 수 있다** → 현장에서 `agentcore --help`로 한 번 확인 후 사용.
 표준 흐름 (현장에서 정확한 엔트리포인트 파일명만 맞추면 됨):
 ```bash
 # 1) 한 번만: 에이전트 설정 (entrypoint = 런타임이 부르는 파일)

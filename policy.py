@@ -98,7 +98,7 @@ class Entity:
     y: float
     vx: float = 0.0
     vy: float = 0.0
-    stamina: float = 1.0     # [VERIFIED in state] 0..1
+    stamina: float = 1.0     # [ASSUMPTION] presence verified; 0..1 range gated -> confirm on-site
 
 
 @dataclass

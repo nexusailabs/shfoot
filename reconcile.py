@@ -27,8 +27,8 @@ from __future__ import annotations
 import json
 import sys
 
-from policy import Role, OPP_GOAL, dist, decide_action, Action
-from squad import state_from_obs, action_to_runtime, act
+from policy import Role, OPP_GOAL, decide_action, Action
+from squad import state_from_obs, action_to_runtime, VALID_ACTIONS
 
 # Keys squad.state_from_obs() currently expects. Hard = indexed (KeyError if absent);
 # soft = .get() with a default (won't crash but a rename means silently-wrong data).
@@ -76,24 +76,47 @@ def _key_report(obs: dict) -> list[str]:
             print(f"  WARN  [soft] {k:14s} absent -> defaults silently. confirm portal lacks it")
             fixmes.append(f'obs.get("{k}"): absent -> using default. is it named differently?')
 
-    # entity-level keys, sampled from `me`
-    me = obs.get("me") if isinstance(obs.get("me"), dict) else None
-    print("\n== 2. ENTITY KEYS (sampled from `me`) ==")
-    if me is None:
-        print("  (no usable `me` dict to sample)")
-    else:
+    # entity-level keys — check EVERY entity source, not just `me`. A renamed
+    # x/y on `ball` or any player defaults to 0.0 and would otherwise pass GREEN
+    # while the policy reads garbage positions (Codex blocker reconcile.py:79).
+    print("\n== 2. ENTITY KEYS (me, ball, and every player) ==")
+
+    def _check_entity(label: str, d) -> None:
+        if not isinstance(d, dict):
+            print(f"  FAIL  {label:14s} not a dict -> can't read position")
+            fixmes.append(f'{label}: expected an object with x/y, got {type(d).__name__}')
+            return
         for k in ENTITY_SOFT:
-            mark = "ok  " if k in me else "WARN"
-            note = "" if k in me else " absent -> default (0.0 / stamina 1.0). confirm name"
-            print(f"  {mark}  {k:8s}{note}")
-            if k not in me and k in ("x", "y"):
-                fixmes.append(f'entity "{k}" absent -> position will be 0.0. CRITICAL: find real key in {sorted(me)}')
+            present = k in d
+            mark = "ok  " if present else "WARN"
+            note = "" if present else " absent -> default (0.0 / stamina 1.0)"
+            print(f"  {mark}  {label}.{k:8s}{note}")
+            if not present and k in ("x", "y"):
+                fixmes.append(f'{label}.{k} absent -> position becomes 0.0. CRITICAL: real key in {sorted(d)}')
+
+    _check_entity("me", obs.get("me"))
+    _check_entity("ball", obs.get("ball"))
+    for grp in ("teammates", "opponents"):
+        lst = obs.get(grp)
+        if isinstance(lst, list) and lst:
+            _check_entity(f"{grp}[0]", lst[0])
+        elif lst is None:
+            print(f"  --    {grp:14s} absent (checked at top level above)")
+        else:
+            print(f"  ok    {grp:14s} present but empty -> no entity to sample")
     return fixmes
 
 
 def _chain_report(obs: dict) -> bool:
-    """Run the full chain for all 5 roles. Return True if every link survived."""
-    print("\n== 3. FULL CHAIN per role (obs -> state -> decide -> runtime) ==")
+    """Run the full chain for all 5 roles, with NO swallowing fallback.
+
+    We deliberately call state_from_obs -> decide_action -> action_to_runtime
+    DIRECTLY instead of squad.act(): act() catches every exception and returns a
+    MOVE fallback, which would make a broken adapter print 'ok' here and hide the
+    exact failure we are trying to surface (Codex blocker reconcile.py:105 / the
+    6/23 fail-loud lesson). Any exception or out-of-vocab action is a FAIL.
+    """
+    print("\n== 3. FULL CHAIN per role (direct, fail-loud: state->decide->runtime) ==")
     try:
         gs = state_from_obs(obs)
     except Exception as e:
@@ -102,41 +125,61 @@ def _chain_report(obs: dict) -> bool:
     ok = True
     for role in Role:
         try:
-            out = act(role.value, obs)
-            print(f"  ok    {role.value:6s} -> {json.dumps(out, separators=(',', ':'))}")
+            out = action_to_runtime(decide_action(role, gs))
+            if out.get("action") not in VALID_ACTIONS:
+                print(f"  FAIL  {role.value:6s} -> illegal action {out.get('action')!r}")
+                ok = False
+            else:
+                print(f"  ok    {role.value:6s} -> {json.dumps(out, separators=(',', ':'))}")
         except Exception as e:
             print(f"  FAIL  {role.value:6s} -> {type(e).__name__}: {e}")
             ok = False
     return ok
 
 
-def _direction_probe(obs: dict) -> None:
-    """A flipped x-axis throws NO error but loses every match. Probe it explicitly.
+def _direction_probe(obs: dict) -> str:
+    """Coordinate direction. Returns 'UNVERIFIED' | 'OK' | 'FLIPPED'.
 
-    Convention in policy.py: OUR goal x=0.0, OPP goal x=1.0, x grows left->right.
-    Put a ball-carrying FWD just in front of OPP_GOAL: a correct mapping shoots.
-    If the real portal axis is reversed, the SAME physical 'near opp goal' position
-    will arrive as a small x and the FWD will NOT shoot -> visible mismatch here.
+    HONEST LIMITATION (Codex blocker reconcile.py:123): a static observation alone
+    CANNOT tell us which x is the opponent goal — overwriting `me`/`ball` with our
+    own OPP_GOAL coords just re-tests our own convention (circular, always 'shoots').
+    So we do NOT claim the axis is correct from a sample obs. We resolve it only with
+    a real signal:
+      * env FBALL_ATTACK=right|left  (you set it after seeing one live tick), or
+      * a labeled obs key  obs['attack_direction'] = 'right'|'left'.
+    Right == our policy convention (attack toward x=1.0). Left == portal x is flipped
+    -> fix with x -> 1.0 - x in state_from_obs(). Absent both -> UNVERIFIED, eyeball live.
     """
-    print("\n== 4. COORDINATE-DIRECTION PROBE (silent-killer guard) ==")
-    print(f"  policy assumes: OUR goal x=0.0, OPP goal x=1.0 (attack toward x=1.0)")
+    import os
+    print("\n== 4. COORDINATE-DIRECTION (cannot be verified from a static obs) ==")
+    print("  policy convention: OUR goal x=0.0, OPP goal x=1.0 (attack toward x=1.0)")
+
+    # self-consistency only — proves the policy shoots under ITS OWN convention,
+    # NOT that the portal agrees. Labeled explicitly so it can't read as 'verified'.
     probe = dict(obs)
     probe["me"] = {"x": OPP_GOAL[0] - 0.08, "y": 0.5, "stamina": 1.0}
     probe["ball"] = {"x": OPP_GOAL[0] - 0.08, "y": 0.5}
-    probe["team_has_ball"] = True
-    probe["i_have_ball"] = True
+    probe["team_has_ball"], probe["i_have_ball"] = True, True
     try:
         d = decide_action(Role.FWD, state_from_obs(probe))
-        verdict = "ok" if d.action == Action.SHOOT else "CHECK"
-        print(f"  FWD on ball at x={OPP_GOAL[0]-0.08:.2f} (near OPP goal) -> {d.action.value} [{verdict}]")
-        if d.action != Action.SHOOT:
-            print("  !! NOT shooting near opp goal -> x-axis may be FLIPPED, or SHOT_RANGE too small.")
-            print("     On 6/24: confirm with a live tick which x is the opponent goal, then either")
-            print("     flip x in state_from_obs() (x -> 1.0 - x) or adjust OPP_GOAL/SHOT_RANGE.")
+        sc = "ok" if d.action == Action.SHOOT else "BROKEN"
+        print(f"  [self-consistency only] FWD at x=0.92 under our convention -> {d.action.value} [{sc}]")
     except Exception as e:
-        print(f"  probe raised {type(e).__name__}: {e}")
-    print("  NOTE: code can't see the pitch. In the FIRST match, EYEBALL that FWD advances")
-    print("        toward the opponent goal. That live confirmation is the real gate (lesson #1).")
+        print(f"  self-consistency probe raised {type(e).__name__}: {e}")
+
+    signal = (str(obs.get("attack_direction", "")).lower()
+              or os.environ.get("FBALL_ATTACK", "").lower())
+    if signal in ("right", "r", "1", "x+"):
+        print("  signal=ATTACK_RIGHT -> matches policy convention. DIRECTION: OK")
+        return "OK"
+    if signal in ("left", "l", "0", "x-"):
+        print("  signal=ATTACK_LEFT -> portal x is FLIPPED vs policy.")
+        print("  FIX: in state_from_obs(), map x -> 1.0 - x (and vx -> -vx) for every entity.")
+        return "FLIPPED"
+    print("  DIRECTION: UNVERIFIED — no FBALL_ATTACK env / attack_direction key supplied.")
+    print("  On 6/24: watch ONE live tick, see which way FWD should attack, then re-run with")
+    print("  FBALL_ATTACK=right (or left) ./.venv/bin/python reconcile.py <obs>. EYEBALL is the gate.")
+    return "UNVERIFIED"
 
 
 def main() -> int:
@@ -152,18 +195,26 @@ def main() -> int:
 
     fixmes = _key_report(obs)
     chain_ok = _chain_report(obs)
-    _direction_probe(obs)
+    direction = _direction_probe(obs)
 
     print("\n== VERDICT ==")
     if chain_ok and not fixmes:
-        print("  GREEN — chain runs for all 5 roles, all expected keys mapped.")
-        print("  Next: deploy the baseline squad, then EYEBALL direction in match 1.")
+        if direction == "FLIPPED":
+            print("  FIXME — keys+chain OK but x-axis is FLIPPED. Apply x -> 1.0 - x in")
+            print("  state_from_obs() (see §4), then re-run.")
+            return 1
+        print("  KEYS+CHAIN GREEN — all expected keys mapped, all 5 roles return a legal action.")
+        if direction == "OK":
+            print("  DIRECTION OK (signalled). Safe to deploy the baseline squad.")
+            return 0
+        print("  DIRECTION still UNVERIFIED — NOT fully clear. Deploy the baseline, then in match 1")
+        print("  EYEBALL that FWD attacks the opponent goal; re-run with FBALL_ATTACK=right|left to lock it.")
         return 0
     print("  FIXME before deploying — edit squad.state_from_obs():")
     for f in fixmes:
         print(f"    - {f}")
     if not chain_ok:
-        print("    - a role chain raised above; fix the key it tripped on first.")
+        print("    - a role chain raised/returned illegal above; fix the key it tripped on first.")
     return 1
 
 

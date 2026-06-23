@@ -31,6 +31,45 @@ from policy import (
     Role, GameState, Entity, Decision, Action, decide_action, ROLE_ANCHOR,
 )
 
+# Runtime may label roles differently than our enum values. Map known aliases;
+# anything unrecognised falls back to MID (a safe central anchor) rather than
+# raising and killing the tick. Confirm the portal's real role names on 6/24.
+ROLE_ALIASES = {
+    "gk": Role.GK, "goalkeeper": Role.GK, "keeper": Role.GK,
+    "def_l": Role.DEF_L, "def_r": Role.DEF_R, "def": Role.DEF_L,
+    "defender": Role.DEF_L, "leftback": Role.DEF_L, "rightback": Role.DEF_R,
+    "lb": Role.DEF_L, "rb": Role.DEF_R, "cb": Role.DEF_L,
+    "mid": Role.MID, "midfielder": Role.MID, "cm": Role.MID,
+    "fwd": Role.FWD, "forward": Role.FWD, "striker": Role.FWD, "st": Role.FWD,
+}
+
+# The 11 legal action strings — anything outside this set must never reach the
+# runtime (an illegal action = no-op or disqualification).
+VALID_ACTIONS = {a.value for a in Action}
+
+
+def resolve_role(role_name) -> Role:
+    """role label (enum / our value / portal alias) -> Role, never raises."""
+    if isinstance(role_name, Role):
+        return role_name
+    key = str(role_name).strip()
+    try:
+        return Role(key)
+    except ValueError:
+        return ROLE_ALIASES.get(key.lower(), Role.MID)
+
+
+def valid_runtime_action(payload) -> bool:
+    """True only if payload is a dict carrying one of the 11 legal actions."""
+    if not isinstance(payload, dict) or payload.get("action") not in VALID_ACTIONS:
+        return False
+    tgt = payload.get("target")
+    return tgt is None or (
+        isinstance(tgt, dict)
+        and isinstance(tgt.get("x"), (int, float))
+        and isinstance(tgt.get("y"), (int, float))
+    )
+
 # [VERIFIED] model is free choice (Nova / Claude / any Bedrock model). A light,
 # fast model keeps us inside the <500ms return budget; heavy reasoning is
 # precomputed in policy.py. Bump to Claude only if a role's gray-zone ties
@@ -89,7 +128,7 @@ def action_to_runtime(d: Decision) -> dict:
 # and only earns its latency on decisions flagged gray_zone (see act_or_escalate).
 def act(role_name: str, obs: dict) -> dict:
     """role + observation dict -> runtime action dict. Deterministic, no LLM."""
-    role = Role(role_name)
+    role = resolve_role(role_name)            # never raises (alias-mapped)
     try:
         d = decide_action(role, state_from_obs(obs))
     except Exception:
@@ -99,7 +138,7 @@ def act(role_name: str, obs: dict) -> dict:
 
 def decide_full(role_name: str, obs: dict) -> Decision:
     """Same as act() but returns the raw Decision (carries .gray_zone)."""
-    role = Role(role_name)
+    role = resolve_role(role_name)            # never raises (alias-mapped)
     try:
         return decide_action(role, state_from_obs(obs))
     except Exception:
@@ -184,10 +223,15 @@ def act_or_escalate(role_name: str, obs: dict, agent=None) -> dict:
         text = getattr(reply, "message", None) or str(reply)
         start, end = text.find("{"), text.rfind("}")
         if start != -1 and end != -1:
-            return json.loads(text[start:end + 1])
+            candidate = json.loads(text[start:end + 1])
+            # NEVER pass unvalidated LLM output to the runtime: an out-of-vocab
+            # action or malformed target = no-op / disqualification. Accept only
+            # one of the 11 legal actions with a well-formed target.
+            if valid_runtime_action(candidate):
+                return candidate
     except Exception:
         pass
-    return action_to_runtime(d)   # any failure -> trust the deterministic call
+    return action_to_runtime(d)   # any failure / invalid LLM -> deterministic call
 
 
 def build_squad_graph():

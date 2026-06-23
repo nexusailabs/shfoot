@@ -59,7 +59,7 @@ FWD  최전방, 상대 골문 라인 유지, 슛 레인지 진입 시 즉시 슛
 - 예외 시 fallback(`move` to 앵커) 보장 — AI League "empty path 절대 금지"와 동형
 
 ## 4. 기술 아키텍처 (Strands)
-- **기본 = 역할 `Agent` 5개 독립** (`squad.build_role_agents`). 런타임이 각 선수 에이전트를 per-tick 호출하는 확정 스펙에 맞는 형태. **Strands `Graph`는 옵션**(`build_squad_graph`) — 포털이 단일 Graph 아티팩트를 요구할 때만. Swarm의 auto-handoff는 ball-chasing 재현 위험 있어 회피.
+- **기본 = 역할 `Agent` 5개 독립** (`squad.build_role_agents`). 런타임이 각 선수 에이전트를 per-tick 호출한다는 **가정** `[ASSUMPTION — squad.py 헤더와 일치: 포털 연동 방식 미확인, 현장 첫 30분 확인]` 에 맞춘 형태. **Strands `Graph`는 옵션**(`build_squad_graph`) — 포털이 단일 Graph 아티팩트를 요구할 때만. Swarm의 auto-handoff는 ball-chasing 재현 위험 있어 회피.
 - per-tick 진입점은 **`squad.act()` (결정론, LLM 0회)**; gray-zone만 `act_or_escalate`로 LLM 위임.
 - 정책은 순수 함수(거리/오픈성/슛레인지/최근접 판정) — 외부 API 호출 없음(실격 룰 안전).
 - **full-state 관측 → 각 에이전트가 "내가 최근접인가"를 독립 계산** → 통신 없이 정확히 1명만 압박(동거리 타이는 좌표 lexicographic으로 결정론적 분리). 이게 anti-swarm의 수학적 근거.
