@@ -12,7 +12,7 @@
 1. **포털 obs 1개 복사** → 터미널: `pbpaste | python reconcile.py -` → GREEN 뜰 때까지 `state_from_obs` 고침
 2. **숫자 튜닝**: Kiro 채팅에 "policy.py에서 `<튜너블>`을 `<값>`으로 바꿔" (또는 직접 편집)
 3. **검증**: `python -m unittest test_policy` → green 확인
-4. **배포**: `agentcore deploy` (아래 3번)
+4. **배포**: `agentcore deploy` (아래 3번) — ⚠️ **단, §4 항목①(제출방식: CLI vs 포털)을 현장에서 확인한 뒤에만.** 확인 전엔 배포 경로 가정 금지(= 6/23 함정).
 → 1차 매치 관찰 → 2번으로. 끝. 새 메커니즘 배울 거 없음.
 
 ## 2. Kiro 켜고 폴더 열기 (3클릭)
