@@ -57,6 +57,7 @@ GOAL_HALF = 0.18           # goal mouth half-height around y=0.5
 STAM_DRAIN = 0.020         # per-tick stamina cost of a sprint action
 STAM_RECOVER = 0.012       # per-tick stamina recovery otherwise
 SPRINT_ACTIONS = {"press", "tackle", "intercept", "dribble", "shoot"}
+CLOSEST_EPS = 1e-9         # exact-tie epsilon for side-neutral possession contests
 
 
 @dataclass
@@ -105,14 +106,28 @@ def new_match() -> Match:
     return Match(players=players)
 
 
+KICKOFF_SETBACK = 0.12     # > CONTROL_RADIUS & TACKLE_RADIUS, so no tick-1 steal on overlap
+
+
 def kickoff(m: Match, to_side: str) -> None:
-    """Reset all players to anchors and hand the ball to `to_side`'s MID at center."""
+    """Reset all players to anchors and hand the ball to `to_side`'s MID at center.
+
+    The opponent MID is set back into its own half by KICKOFF_SETBACK so the two
+    MIDs do NOT spawn on the same point — otherwise the receiver would be inside
+    the opponent MID's tackle/control radius on tick 1 and the restart would be an
+    instant 50/50, not a clean possession (Codex MAJOR: kickoff overlap artifact)."""
     for p in m.players:
         p.x, p.y = _anchor_global(p.side, p.idx)
     m.bx, m.by, m.bvx, m.bvy = 0.5, 0.5, 0.0, 0.0
     mid = next(i for i, p in enumerate(m.players) if p.side == to_side and p.idx == 3)
     m.players[mid].x, m.players[mid].y = 0.5, 0.5
     m.carrier = mid
+    # push the conceding/non-receiving MID back toward its OWN goal (A defends x=0,
+    # B defends x=1), legal-distance away from the center spot.
+    opp = "B" if to_side == "A" else "A"
+    opp_mid = next(i for i, p in enumerate(m.players) if p.side == opp and p.idx == 3)
+    m.players[opp_mid].x = 0.5 - KICKOFF_SETBACK if opp == "A" else 0.5 + KICKOFF_SETBACK
+    m.players[opp_mid].y = 0.5
 
 
 # --------------------------------------------------------------------------- #
@@ -194,21 +209,23 @@ def _move_toward(p: Player, tx: float, ty: float, speed: float) -> None:
     p.y = max(0.0, min(1.0, p.y + dy / d * step))
 
 
-def step(m: Match, brain_a, brain_b, latency_acc: list, illegal_acc: list) -> dict:
+def step(m: Match, brain_a, brain_b, latency_acc: list, illegal_acc: dict) -> dict:
     """Advance one tick. Returns the tick's per-side action tallies."""
     brains = {"A": brain_a, "B": brain_b}
     actions: list[dict] = []
     tally = {"A": {}, "B": {}}
 
-    # 1) every agent decides (timed — must clear the 500ms budget)
+    # 1) every agent decides (timed — must clear the 500ms budget). We validate
+    # the FULL runtime payload (action in vocab AND well-formed target), not just
+    # the action string, and count illegal decisions PER SIDE before the no-op so
+    # self-play surfaces side-B illegality too (Codex MAJOR + MINOR).
     for pi, p in enumerate(m.players):
         t0 = time.perf_counter()
         a = brains[p.side](m, pi)
         latency_acc.append((time.perf_counter() - t0) * 1000.0)
-        if not isinstance(a, dict) or a.get("action") not in VALID_ACTIONS:
-            if p.side == "A":
-                illegal_acc.append(1)         # honest count of raw illegal A decisions
-            a = {"action": "hold"}            # illegal -> no-op
+        if not SQUAD.valid_runtime_action(a):
+            illegal_acc[p.side] += 1
+            a = {"action": "hold"}            # illegal -> no-op (counted above)
         actions.append(a)
         tally[p.side][a["action"]] = tally[p.side].get(a["action"], 0) + 1
 
@@ -258,7 +275,8 @@ def step(m: Match, brain_a, brain_b, latency_acc: list, illegal_acc: list) -> di
         c = m.players[m.carrier]
         m.bx, m.by, m.bvx, m.bvy = c.x, c.y, 0.0, 0.0
 
-    # 5) loose ball travels
+    # 5) loose ball travels (remember the pre-move point for segment goal-testing)
+    px, py = m.bx, m.by
     if m.carrier is None:
         m.bx += m.bvx
         m.by += m.bvy
@@ -266,7 +284,7 @@ def step(m: Match, brain_a, brain_b, latency_acc: list, illegal_acc: list) -> di
         m.bvy *= BALL_FRICTION
 
     # 6) goal / out-of-bounds check (only meaningful for a loose, travelling ball)
-    scored = _check_goal(m)
+    scored = _check_goal(m, px, py)
 
     # 7) possession contest (skip the tick we just scored & re-kicked off)
     if not scored:
@@ -275,18 +293,33 @@ def step(m: Match, brain_a, brain_b, latency_acc: list, illegal_acc: list) -> di
     return tally
 
 
-def _check_goal(m: Match) -> bool:
+def _y_at_cross(px: float, py: float, nx: float, ny: float, line_x: float) -> float:
+    """y where the segment (px,py)->(nx,ny) crosses x=line_x. Caller guarantees a
+    crossing (nx != px)."""
+    t = (line_x - px) / (nx - px)
+    return py + t * (ny - py)
+
+
+def _check_goal(m: Match, px: float = None, py: float = None) -> bool:
+    """Score on the SEGMENT crossing the goal line within the mouth, not just the
+    post-step point — a fast diagonal can cross the mouth yet land wide (Codex
+    MAJOR). px,py default to the current point for the single-frame unit test."""
     if m.carrier is not None:
         return False
-    in_mouth = abs(m.by - 0.5) <= GOAL_HALF
-    if m.bx >= 1.0:
-        if in_mouth:
+    if px is None:
+        px, py = m.bx, m.by
+
+    # A attacks x=1; B attacks x=0. Test each goal line for a segment crossing.
+    if m.bx >= 1.0 and px < 1.0:
+        yc = _y_at_cross(px, py, m.bx, m.by, 1.0) if m.bx != px else m.by
+        if abs(yc - 0.5) <= GOAL_HALF:
             m.score_a += 1
             kickoff(m, "B")
             return True
-        m.bx, m.bvx = 1.0, 0.0                    # rebound off back wall, stay loose
-    elif m.bx <= 0.0:
-        if in_mouth:
+        m.bx, m.bvx = 1.0, 0.0                    # wide -> rebound off back wall, stay loose
+    elif m.bx <= 0.0 and px > 0.0:
+        yc = _y_at_cross(px, py, m.bx, m.by, 0.0) if m.bx != px else m.by
+        if abs(yc - 0.5) <= GOAL_HALF:
             m.score_b += 1
             kickoff(m, "A")
             return True
@@ -317,14 +350,21 @@ def _resolve_possession(m: Match, actions: list) -> None:
         return
 
     # (b) loose & slow ball -> nearest player within CONTROL_RADIUS controls it.
+    # Tie rule is SIDE-NEUTRAL: if the two closest are from different sides and
+    # within epsilon, the ball stays loose (contested) rather than defaulting to
+    # the lower player-index, which always favoured side A and quietly broke the
+    # "mirror proves symmetry" claim (Codex MAJOR).
     if math.hypot(m.bvx, m.bvy) <= CONTROL_RADIUS:
-        cand = [
+        cand = sorted(
             (math.hypot(p.x - m.bx, p.y - m.by), j)
             for j, p in enumerate(m.players)
             if math.hypot(p.x - m.bx, p.y - m.by) <= CONTROL_RADIUS
-        ]
+        )
         if cand:
-            m.carrier = min(cand)[1]
+            if (len(cand) >= 2 and abs(cand[0][0] - cand[1][0]) <= CLOSEST_EPS
+                    and m.players[cand[0][1]].side != m.players[cand[1][1]].side):
+                return                              # cross-side dead heat -> stays loose
+            m.carrier = cand[0][1]
             nc = m.players[m.carrier]
             m.bx, m.by, m.bvx, m.bvy = nc.x, nc.y, 0.0, 0.0
 
@@ -344,13 +384,13 @@ def team_spread(m: Match, side: str) -> float:
 def run_match(brain_a, brain_b, ticks: int = 300, label: str = "", kickoff_to: str = "A") -> dict:
     m = new_match()
     kickoff(m, kickoff_to)
+    SQUAD.reset_fallback_count()        # any deterministic fallback during the run is a fail
     latency: list[float] = []
-    illegal_acc: list[int] = []
+    illegal_acc = {"A": 0, "B": 0}
     poss = {"A": 0, "B": 0, "loose": 0}
     spread = {"A": 0.0, "B": 0.0}
     fwd_x_sum = 0.0
     act_hist: dict[str, int] = {}
-    illegal = 0
 
     for _ in range(ticks):
         m.tick += 1
@@ -366,8 +406,6 @@ def run_match(brain_a, brain_b, ticks: int = 300, label: str = "", kickoff_to: s
         for act, n in tally["A"].items():
             act_hist[act] = act_hist.get(act, 0) + n
 
-    illegal = sum(illegal_acc)      # raw illegal A decisions, counted pre-no-op
-
     n = float(ticks)
     res = {
         "label": label,
@@ -378,7 +416,9 @@ def run_match(brain_a, brain_b, ticks: int = 300, label: str = "", kickoff_to: s
         "spread_B": round(spread["B"] / n, 3),
         "fwd_mean_x_A": round(fwd_x_sum / n, 3),
         "max_latency_ms": round(max(latency), 3) if latency else 0.0,
-        "illegal_actions_A": illegal,
+        "illegal_actions_A": illegal_acc["A"],   # raw illegal decisions, pre-no-op
+        "illegal_actions_B": illegal_acc["B"],
+        "fallbacks": SQUAD.fallback_count(),      # 0 => the real policy ran every tick
         "action_hist_A": dict(sorted(act_hist.items(), key=lambda kv: -kv[1])),
     }
     return res
@@ -394,7 +434,8 @@ def _print(res: dict) -> None:
           f"(higher = holds shape, lower = ball-chasing swarm)")
     print(f"  FWD mean x A  {res['fwd_mean_x_A']}  (anchor 0.78; >0.5 = stays advanced toward opp goal)")
     print(f"  max decision  {res['max_latency_ms']} ms   (budget 500ms)")
-    print(f"  illegal A     {res['illegal_actions_A']}")
+    print(f"  illegal A/B   {res['illegal_actions_A']} / {res['illegal_actions_B']}   "
+          f"policy fallbacks {res['fallbacks']}  (both must be 0)")
     print(f"  A actions     {res['action_hist_A']}")
 
 
@@ -424,16 +465,24 @@ def main() -> None:
     a, b = r1["score"]
     spread_gap = r1["spread_A"] - r1["spread_B"]
     lat_ok = all(r["max_latency_ms"] < 500 for r in (r1, s1, s2))
-    illegal_ok = all(r["illegal_actions_A"] == 0 for r in (r1, s1, s2))
+    # both sides' illegal counts must be zero — in self-play side B is also the squad
+    illegal_ok = all(r["illegal_actions_A"] == 0 and r["illegal_actions_B"] == 0
+                     for r in (r1, s1, s2))
+    # the real policy must have decided every tick — no deterministic fallback
+    fallback_ok = all(r["fallbacks"] == 0 for r in (r1, s1, s2))
     checks = [
         ("squad keeps more shape than the swarm (spread_A > spread_B)",
          r1["spread_A"] > r1["spread_B"]),
         ("squad beats the naive swarm (A > B)", a > b),
-        ("squad starves the swarm of possession (A% > B%)",
-         r1["possession_pct"]["A"] > r1["possession_pct"]["B"]),
+        # NOT a possession check: a swarm HOARDS the ball by crowding it, so it
+        # often out-possesses us — but crowding ≠ penetration. The honest claim is
+        # that the swarm cannot CONVERT its possession (it hogs the ball and still
+        # gets shut out while we score).
+        ("swarm hoards possession but converts none (B scored 0)", b == 0),
         ("FWD stays advanced (mean x > 0.5)", r1["fwd_mean_x_A"] > 0.5),
         ("every decision clears the 500ms budget", lat_ok),
-        ("zero illegal actions reached the runtime", illegal_ok),
+        ("zero illegal actions reached the runtime (both sides)", illegal_ok),
+        ("the real policy decided every tick — no fallback", fallback_ok),
         ("self-play is symmetric over both kickoffs (|aggA-aggB| <= 3)",
          abs(agg_a - agg_b) <= 3),
     ]

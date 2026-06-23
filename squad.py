@@ -47,6 +47,22 @@ ROLE_ALIASES = {
 # runtime (an illegal action = no-op or disqualification).
 VALID_ACTIONS = {a.value for a in Action}
 
+# Fail-loud instrumentation: act()/decide_full() catch policy/adapter exceptions
+# and return a safe MOVE fallback so a single bad tick never kills the runtime.
+# That degradation must stay VISIBLE — a fallback means the policy did NOT decide,
+# so the offline validator asserts this stays 0 (a GREEN run must exercise the
+# real policy, not the safety net). Reset before a measured run; read after.
+_FALLBACK_COUNT = 0
+
+
+def fallback_count() -> int:
+    return _FALLBACK_COUNT
+
+
+def reset_fallback_count() -> None:
+    global _FALLBACK_COUNT
+    _FALLBACK_COUNT = 0
+
 
 def resolve_role(role_name) -> Role:
     """role label (enum / our value / portal alias) -> Role, never raises."""
@@ -132,6 +148,8 @@ def act(role_name: str, obs: dict) -> dict:
     try:
         d = decide_action(role, state_from_obs(obs))
     except Exception:
+        global _FALLBACK_COUNT
+        _FALLBACK_COUNT += 1                   # visible degradation, never silent
         d = Decision(Action.MOVE, ROLE_ANCHOR[role], "fallback")
     return action_to_runtime(d)
 
@@ -142,6 +160,8 @@ def decide_full(role_name: str, obs: dict) -> Decision:
     try:
         return decide_action(role, state_from_obs(obs))
     except Exception:
+        global _FALLBACK_COUNT
+        _FALLBACK_COUNT += 1                   # visible degradation, never silent
         return Decision(Action.MOVE, ROLE_ANCHOR[role], "fallback")
 
 

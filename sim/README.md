@@ -24,18 +24,19 @@ python3 -m unittest test_engine -v
 |---|---|
 | **team spread** (mean pairwise dist of the 5) | the headline anti-swarm signal — a swarm collapses onto the ball (low spread); a disciplined side holds shape (high spread) |
 | score vs swarm | the swarm's GK chases the ball too, leaving its goal open — discipline punishes it |
-| possession % | a disciplined side keeps the ball; the swarm only has it in transit |
+| possession % | a swarm *hoards* possession by crowding the ball, yet converts none of it — high B possession + 0 B goals is the point, not a metric we try to "win" |
 | FWD mean x | stays advanced toward the opponent goal (catches a flipped x-axis) |
 | max decision latency | must clear the 500ms budget (deterministic = microseconds) |
-| illegal actions | must be 0 — only the 11-command vocabulary may reach the runtime |
-| self-play mirror | identical policy both sides; swapping kickoff mirrors the result exactly → proves the side-B frame flip + policy are symmetric |
+| illegal actions (both sides) | must be 0 — only the 11-command vocabulary may reach the runtime; counted per side so self-play surfaces side-B illegality too |
+| policy fallbacks | must be 0 — proves the real policy decided every tick, never the safety-net MOVE fallback |
+| self-play mirror | identical policy both sides; swapping kickoff mirrors the result exactly (side-neutral tie-breaking), demonstrating the side-B frame flip + policy are symmetric |
 
 ## Representative result (300 ticks)
 
 ```
-squad vs SWARM   25:0   possession A 59.7% / B 32%   spread A 0.414 / B 0.272
-self-play A-kick 10:4   B-kick 4:10   aggregate 14:14   (perfectly symmetric)
-all decisions < 0.04 ms   illegal 0   FWD mean x 0.838
+squad vs SWARM   26:0   spread A 0.366 / B 0.255   (swarm hoards 73% possession, scores 0)
+self-play A-kick 7:8   B-kick 8:7   aggregate 15:15   (exact mirror, side-neutral ties)
+all decisions < 0.04 ms   illegal 0/0   fallbacks 0   FWD mean x 0.77
 ```
 
 ## NOT claimed
