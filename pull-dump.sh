@@ -1,34 +1,27 @@
 #!/usr/bin/env bash
-# Football Cup — slice live AgentCore dump to signal-only, upload robustly, print URL.
-# Reuses ~/fc-dump.txt if present (no re-pull); else does a LIGHT pull (no 8h log tail).
+# Football Cup — make a TINY truncated slice from existing ~/fc-dump.txt, free disk, upload.
 set +e
 SRC="$HOME/fc-dump.txt"
 SMALL="$HOME/fc-small.txt"
 
+rm -f "$SMALL"   # free the 64MB bloated slice first (disk is full)
+
 if [ ! -s "$SRC" ]; then
-  : > "$SRC"
-  echo "## RUNTIMES ##" >> "$SRC"
-  for a in ai_gk_agent-sbGF2v9Uay ai_def_agent-jsgv7M6UfK ai_mid_agent-ZbTrQo7y6g ai_fwd1_agent-qthSxi8TdE ai_fwd2_agent-0LNpt2HRM5; do
-    echo "=== $a ===" >> "$SRC"
-    aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "$a" >> "$SRC" 2>&1
-  done
-  echo "## GATEWAYS ##" >> "$SRC"
-  aws bedrock-agentcore-control list-gateways >> "$SRC" 2>&1
-  aws bedrock-agentcore-control list-gateway-targets >> "$SRC" 2>&1
-  echo "## LOGS ##" >> "$SRC"
-  for lg in $(aws logs describe-log-groups --log-group-name-prefix /aws/bedrock-agentcore --query 'logGroups[].logGroupName' --output text 2>/dev/null); do
-    echo "=== $lg ===" >> "$SRC"
-    aws logs tail "$lg" --since 8h --format short >> "$SRC" 2>&1
-  done
+  echo "no ~/fc-dump.txt — run the full pull first"; exit 1
 fi
 
 {
   echo "### CONFIG (runtimes + gateways) ###"
-  sed -n '/## RUNTIMES ##/,/## LOGS ##/p' "$SRC"
+  sed -n '/## RUNTIMES ##/,/## LOGS ##/p' "$SRC" | cut -c1-2000
   echo
-  echo "### LOG SIGNAL LINES (schema + errors) ###"
-  grep -iaE 'gameState|"ball"|"players"|"position"|passer_position|shooter_position|goalkeeper_position|team_id|player_id|should_shoot|success_probability|KeyError|Traceback|Exception|ValidationException|denied|throttl|timeout|fallback' "$SRC" | head -500
-} > "$SMALL"
+  echo "### ERRORS (truncated) ###"
+  grep -iaE 'KeyError|Traceback|Exception|ValidationException|AccessDenied|denied|throttl|MissingRequired|invalid|notfound|error' "$SRC" | head -80 | cut -c1-800
+  echo
+  echo "### SCHEMA SAMPLES (gameState/ball/players, truncated) ###"
+  grep -aE '"ball"|"players"|gameState|passer_position|shooter_position|goalkeeper_position|should_shoot|success_probability' "$SRC" | head -8 | cut -c1-2500
+} > "$SMALL" 2>/dev/null
+
+rm -f "$SRC"   # free the 600k-line monster now that we've sliced it
 
 SL=$(wc -l < "$SMALL"); SB=$(wc -c < "$SMALL")
 echo "slice: $SL lines / $SB bytes, uploading..."
@@ -39,5 +32,5 @@ URL=$(curl -fsS -A "$UA" -F "file=@$SMALL" https://0x0.st 2>/dev/null)
 [ -z "$URL" ] && URL=$(curl -fsS --data-binary @"$SMALL" https://paste.rs 2>/dev/null)
 echo "=================================================="
 echo "DUMP URL: $URL"
-echo "  (slice $SL lines — read this URL back to Claude)"
+echo "  (slice $SL lines / $SB bytes)"
 echo "=================================================="
