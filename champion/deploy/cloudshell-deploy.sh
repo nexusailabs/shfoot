@@ -11,9 +11,13 @@ cd shfoot/champion/deploy/ai-team-champion || exit 1
 
 # CloudShell runs inside a virtualenv -> plain pip install (NOT --user).
 command -v agentcore >/dev/null || pip install -q bedrock-agentcore-starter-toolkit
+# direct_code_deploy requires `uv`; CloudShell lacks it -> install via pip.
+command -v uv >/dev/null || pip install -q uv
 hash -r 2>/dev/null
-command -v agentcore >/dev/null || { echo "ERROR: agentcore still not on PATH after install"; pip show bedrock-agentcore-starter-toolkit 2>/dev/null | head -3; }
+command -v agentcore >/dev/null || { echo "ERROR: agentcore not on PATH"; pip show bedrock-agentcore-starter-toolkit 2>/dev/null | head -3; }
+command -v uv >/dev/null && echo "uv: $(uv --version)" || echo "WARN: uv still missing"
 export AWS_DEFAULT_REGION=us-east-1
+export AGENTCORE_SUPPRESS_RECOMMENDATION=1
 
 echo "## deploy ##"
 ./deploy-all.sh 2>&1 | tee "$HOME/deploy.log"
