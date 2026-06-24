@@ -25,6 +25,9 @@ const HTML = `<!doctype html>
   .cmd p{margin:0;flex:1;font-family:var(--mono);font-size:13px;color:#dbe7f0}
   .cmd button{background:#1a2531;color:var(--acc);border:1px solid #284a39;border-radius:7px;padding:4px 9px;font-size:12px;font-weight:700;cursor:pointer}
   .grp{margin:12px 0 3px;font-size:13px;font-weight:800;color:var(--acc2)}.grp.crit{color:var(--warn)}
+  .cc{background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:14px 14px;margin:7px 0;font-family:var(--mono);font-size:14px;color:#dbe7f0;cursor:pointer;line-height:1.4;transition:background .1s}
+  .cc:active{background:#16321f;transform:scale(.99)}
+  .cc.done{background:#16321f;border-color:var(--acc);color:#fff}
   .pill{font-size:12px;color:var(--mut)}
   #chat{display:none;flex-direction:column;height:calc(100vh - 49px)}
   #log{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px}
@@ -42,7 +45,35 @@ const HTML = `<!doctype html>
   .bar .send{flex:0 0 auto;background:var(--acc);color:#04140a;border:none;border-radius:10px;padding:0 18px;height:42px;font-weight:800;font-size:15px;cursor:pointer}
   .hint{color:var(--mut);font-size:12px;text-align:center;padding:8px}
 </style></head><body>
-<div class="tabs"><button id="tCheat" class="on" onclick="tab('cheat')">치트</button><button id="tChat" onclick="tab('chat')">클로드 채팅</button></div>
+<div class="tabs"><button id="tCheat" class="on" onclick="tab('cheat')">치트</button><button id="tCoach" onclick="tab('coach')">⚡코칭</button><button id="tChat" onclick="tab('chat')">채팅</button></div>
+
+<div id="coach" class="wrap" style="display:none">
+  <h1>⚡ 라이브 코칭 <span class="pill">탭 → 복사 → 게임 입력창에 붙여넣기</span></h1>
+  <div class="sub">실전은 코칭 싸움이야(C6 교훈). 상황 보이면 바로 탭해서 스팸해. 영어만 먹힘.</div>
+
+  <div class="grp crit">🔴 상대가 압박해올 때 (최우선)</div>
+  <div class="cc" onclick="cc(this)">Play fast. One-touch passes to beat the press.</div>
+  <div class="cc" onclick="cc(this)">Defenders, clear long when pressured. Do not hold the ball.</div>
+
+  <div class="grp">🟢 우리가 몰아붙일 때 (상대 공 소유)</div>
+  <div class="cc" onclick="cc(this)">Press high together now and win the ball back fast.</div>
+  <div class="cc" onclick="cc(this)">Midfielder and forwards, hunt the ball in their half.</div>
+
+  <div class="grp">⚡ 역습 (압박 풀고 빠르게)</div>
+  <div class="cc" onclick="cc(this)">Forwards, run in behind their defense. Counter fast.</div>
+  <div class="cc" onclick="cc(this)">Long ball forward now into the space behind them.</div>
+
+  <div class="grp">🛡️ 리드 지키기</div>
+  <div class="cc" onclick="cc(this)">Defenders, hold a compact line. Do not dive in.</div>
+  <div class="cc" onclick="cc(this)">Keep possession, slow it down, protect the lead.</div>
+
+  <div class="grp">🥅 뭉침 방지</div>
+  <div class="cc" onclick="cc(this)">Return to your assigned zones. Only the nearest player presses.</div>
+
+  <div class="grp">📈 지고 있을 때</div>
+  <div class="cc" onclick="cc(this)">We are behind. Push up and commit one extra player to attack.</div>
+  <div class="cc" onclick="cc(this)">Forwards, shoot on sight and take more risks.</div>
+</div>
 
 <div id="cheat" class="wrap">
   <h1>⚽ 풋볼컵 현장 치트 <span class="pill">6/24 · 노코드</span></h1>
@@ -205,13 +236,15 @@ cd agentic-football-sample-agents</pre>
 
 <script>
 function tab(t){
-  var c=t==='cheat';
-  document.getElementById('cheat').style.display=c?'block':'none';
-  document.getElementById('chat').style.display=c?'none':'flex';
-  document.getElementById('tCheat').className=c?'on':'';
-  document.getElementById('tChat').className=c?'':'on';
-  if(!c){poll();setTimeout(scrollDown,60);}
+  document.getElementById('cheat').style.display = t==='cheat'?'block':'none';
+  document.getElementById('coach').style.display = t==='coach'?'block':'none';
+  document.getElementById('chat').style.display  = t==='chat' ?'flex' :'none';
+  document.getElementById('tCheat').className = t==='cheat'?'on':'';
+  document.getElementById('tCoach').className = t==='coach'?'on':'';
+  document.getElementById('tChat').className  = t==='chat' ?'on':'';
+  if(t==='chat'){poll();setTimeout(scrollDown,60);}
 }
+function cc(el){ var t=el.innerText; navigator.clipboard.writeText(t).then(function(){ el.classList.add('done'); var o=el.innerText; el.innerText='✓ 복사됨 — 게임 입력창에 붙여넣기'; setTimeout(function(){el.innerText=o; el.classList.remove('done');},1200); }); }
 function cp(b){var t=b.parentElement.querySelector('p').innerText;navigator.clipboard.writeText(t).then(function(){var o=b.innerText;b.innerText='✓';setTimeout(function(){b.innerText=o;},900);});}
 var seen=0, pendImg=null;
 function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');}
