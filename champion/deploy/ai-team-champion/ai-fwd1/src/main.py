@@ -4,7 +4,7 @@ decision is the deterministic champion policy (policy_v2), decided in code in
 microseconds. No model round-trip. The runtime contract is a JSON LIST of one
 command for our player.
 """
-import os, sys, json, time
+import os, sys, json, time, asyncio
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
@@ -14,6 +14,11 @@ app = BedrockAgentCoreApp()
 
 MY_PLAYER_ID = 3
 POSITION_LABEL = "FWD1"
+# Burst-stagger (hypothesis F): the engine sends all 5 invokes at tick start; five
+# zero-LLM agents finishing together in ~0.17ms hammer the engine's concurrent-SSE
+# handling (LLM agents naturally stagger on model latency, ~400-500ms in-match vs our
+# ~975ms). De-sync our response times by player id so they don't all close at once.
+_STAGGER_S = MY_PLAYER_ID * 0.06   # 0/60/120/180/240ms
 
 # --- latency instrumentation ---------------------------------------------
 # _PROC_START is set ONCE per process (microVM). If every invoke logs a small
@@ -47,10 +52,10 @@ async def invoke(payload, context):
     print("FCINST " + json.dumps({"pos": POSITION_LABEL, "n": _STATE["n"],
           "proc_age_s": round(time.time() - _PROC_START, 1), "handler_ms": _h_ms}),
           flush=True)
-    # SSE streaming yield is MANDATORY: the match engine reads `data: ...` frames.
-    # (Tested: a non-streaming `return [cmd]` -> JSON body -> fitness FAILED 0/5, so
-    # the engine requires the async-generator/SSE path. The ~875ms SSE slow-close on
-    # a fast zero-LLM yield must be solved WITHIN streaming or accepted.)
+    # SSE streaming yield is MANDATORY (a non-streaming return failed fitness 0/5).
+    # Stagger the close by player id to de-sync the 5-agent burst (hypothesis F).
+    if _STAGGER_S:
+        await asyncio.sleep(_STAGGER_S)
     yield json.dumps([cmd])
 
 
