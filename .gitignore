@@ -12,3 +12,7 @@ web-chat/bun.lock*
 _chat/watch*.log
 _chat/PRIMER.md
 _build/
+champion/deploy/run_match.py
+champion/deploy/tick_collector.py
+champion/deploy/tick_decode.py
+champion/deploy/measure_latency.py
