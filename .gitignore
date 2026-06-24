@@ -3,3 +3,6 @@ __pycache__/
 .DS_Store
 _audits/
 .venv/
+_chat/watch.log
+_chat/.answered_*
+_chat/STOP
