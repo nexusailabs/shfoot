@@ -47,7 +47,12 @@ async def invoke(payload, context):
     print("FCINST " + json.dumps({"pos": POSITION_LABEL, "n": _STATE["n"],
           "proc_age_s": round(time.time() - _PROC_START, 1), "handler_ms": _h_ms}),
           flush=True)
-    yield json.dumps([cmd])
+    # NON-STREAMING return (plain value, not a generator) -> AgentCore uses the
+    # JSON Response path, not StreamingResponse/SSE. Codex latency audit: our fast
+    # async-generator yield was hitting the SSE streaming close/flush slow path
+    # (~875ms in-match). A `return` value avoids it. If the match engine needs SSE,
+    # pre-match fitness will fail -> revert to `yield json.dumps([cmd])`.
+    return [cmd]
 
 
 if __name__ == "__main__":
