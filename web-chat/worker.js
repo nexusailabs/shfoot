@@ -99,31 +99,39 @@ const HTML = `<!doctype html>
     <div class="grp">팁</div>워크숍에서 "Local Machine / Harness / CloudShell" 중 고르라 하면 → <b>CloudShell</b> 선택(환경문제 없음). 붙여넣기는 우클릭 또는 Ctrl+Shift+V.
   </div>
 
-  <h2><span class="n">3</span>샘플 코드 받기 (클론)</h2>
+  <h2><span class="n">3</span>샘플 레포 클론 (CloudShell에 이 4줄)</h2>
   <div class="card">
-    <div class="grp">이게 뭐냐</div>주최측이 준 <b>기본 축구팀 코드.</b> 우리는 이걸 토대로 프롬프트·숫자만 바꿈.
-    <div class="grp">할 일</div>워크숍 <b>"단계1: 저장소 클론"</b>에 적힌 4줄 명령 복사 → CloudShell에 붙여넣고 Enter. 다운로드 로그 뜨고 폴더 생기면 성공.
-    <div class="grp">우리 키트도 같이</div>같은 창에서 한 줄 더:
-    <pre>git clone https://github.com/nexusailabs/shfoot</pre>
-    그럼 우리 프롬프트·정책이 옆 폴더에 생김.
+    <div class="grp">이게 뭐냐</div>주최측 <b>샘플 축구팀 코드.</b> 우리는 이걸 토대로 프롬프트만 바꿔서 배포함.
+    <div class="grp">CloudShell 열고 이 4줄 그대로 붙여넣기 (실제 명령)</div>
+    <pre>git clone --filter=blob:none --sparse https://github.com/aws-samples/sample-ai-possibilities
+cd sample-ai-possibilities
+git sparse-checkout set agentic-football-sample-agents
+cd agentic-football-sample-agents</pre>
+    <div class="grp">폴더 구조 (받아지면)</div>
+    <ul>
+      <li><b>팀 3종</b>: <code>ai-team-strands-balanced</code>(★추천) / extremely-aggressive / extremely-defensive</li>
+      <li>각 팀 = 5 에이전트 <code>ai-gk · ai-def · ai-mid · ai-fwd1 · ai-fwd2</code> + <code>deploy-all.sh</code></li>
+      <li>각 에이전트 = <code>src/main.py</code> (← 여기 <b>SYSTEM_PROMPT</b> 가 역할 결정)</li>
+    </ul>
   </div>
 
-  <h2><span class="n">4</span>선수 5명 배포 (5+2 명령)</h2>
+  <h2><span class="n">4</span>팀 고르고 우리 프롬프트 심기 ★승부처</h2>
   <div class="card">
-    <div class="grp">이게 뭐냐</div>선수 5명을 클라우드에 실제로 띄우는 작업. <b>"7(5+2)" = 선수 5 + 도구/게이트웨이 2.</b>
-    <div class="grp">할 일</div>워크숍 <b>"3단계 … AgentCore Gateway"</b>의 배포 명령을 CloudShell에 붙여넣고 Enter → <b>람다 + 게이트웨이 자동 생성.</b>
-    <div class="grp">보이는 것</div>생성 로그가 주르륵. 끝나면 선수별 <b>ARN(주소)</b> 이 출력되거나 콘솔에서 확인 가능.
+    <div class="grp">할 일</div><pre>cd ai-team-strands-balanced</pre>
+    각 <code>ai-*/src/main.py</code> 의 <b>SYSTEM_PROMPT</b> 를 우리 anti-swarm 프롬프트로 교체:
+    <ul>
+      <li>ai-gk → GK 프롬프트 · ai-def → DEF · ai-mid → MID · ai-fwd1/ai-fwd2 → FWD</li>
+      <li>채팅 탭에서 <b>"GK 프롬프트 줘"</b> 하면 내가 바로 붙여줌 (또는 내가 배포해줄게)</li>
+      <li>모델 <code>model_id</code> 는 <b>nova-micro</b> 기본(빠름·저지연) 유지</li>
+    </ul>
+    <div class="grp crit">왜 승부처냐</div>5명이 다 공 쫓으면 <b>무조건 짐(뭉침).</b> 프롬프트에 "네 존 지켜, 공 쫓지 마"가 박혀야 함 — 우리 프롬프트가 그렇게 돼있음.
   </div>
 
-  <h2><span class="n">5</span>하네스로 선수 완성 + 프롬프트 주입 ★승부처</h2>
+  <h2><span class="n">5</span>5개 에이전트 배포 → ARN</h2>
   <div class="card">
-    <div class="grp">이게 뭐냐</div><b>하네스 = 각 선수에게 "성격(프롬프트)"과 "두뇌(모델)"를 붙이는 노코드 화면.</b>
-    <div class="grp">할 일</div>선수(GK·DEF·DEF·MID·FWD)마다:
-    <ol>
-      <li><b>우리 역할 프롬프트 붙여넣기</b> — 채팅 탭에서 "GK 프롬프트 줘" 라고 하면 내가 바로 줌</li>
-      <li><b>모델 선택</b> — 가벼운 모델 기본(빠름), 무거운 건 여유 있을 때만</li>
-    </ol>
-    <div class="grp crit">왜 승부처냐</div>5명이 다 공 쫓으면 <b>무조건 진다(뭉침).</b> 프롬프트에 "네 존 지켜, 공 쫓지 마"가 박혀야 함 — <b>우리 프롬프트가 그렇게 돼있음.</b> 이게 이기는 핵심.
+    <div class="grp">할 일</div><pre>./deploy-all.sh</pre>
+    5개 에이전트가 AgentCore에 배포됨. 끝나면 <b>에이전트별 ARN 5개</b> 출력.
+    <div class="grp">주의 (충돌)</div>한 계정에 <b>한 번만</b> 배포. 둘이 동시에 돌리면 중복돼. (내가 Mac에서 대신 배포 가능)
   </div>
 
   <h2><span class="n">6</span>명찰(ARN) 5개 챙기기</h2>
