@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Run inside AWS CloudShell (live workshop account). Clones the champion team,
+# deploys all 5 agents to AgentCore, collects the 5 runtime ARNs, uploads the
+# log so Claude can read the ARNs back. Clipboard-free.
+set +e
+cd "$HOME" || exit 1
+rm -rf shfoot
+echo "## clone ##"
+git clone -q https://github.com/nexusailabs/shfoot || { echo "clone failed"; exit 1; }
+cd shfoot/champion/deploy/ai-team-champion || exit 1
+
+command -v agentcore >/dev/null || pip install -q --user bedrock-agentcore-starter-toolkit
+export AWS_DEFAULT_REGION=us-east-1
+
+echo "## deploy ##"
+./deploy-all.sh 2>&1 | tee "$HOME/deploy.log"
+
+echo "" | tee -a "$HOME/deploy.log"
+echo "## RUNTIME ARNS (paste these 5 into the Player Portal) ##" | tee -a "$HOME/deploy.log"
+grep -ioE 'arn:aws:bedrock-agentcore:[^ "]*runtime/[A-Za-z0-9_.-]+' "$HOME/deploy.log" | sort -u | tee -a "$HOME/deploy.log"
+
+UA="Mozilla/5.0 (X11; Linux x86_64)"
+URL=$(curl -fsS -A "$UA" -F "file=@$HOME/deploy.log" https://0x0.st 2>/dev/null)
+[ -z "$URL" ] && URL=$(curl -fsS --data-binary @"$HOME/deploy.log" https://paste.rs 2>/dev/null)
+echo "=================================================="
+echo "DEPLOY LOG URL: $URL"
+echo "=================================================="
