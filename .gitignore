@@ -6,3 +6,8 @@ _audits/
 _chat/watch.log
 _chat/.answered_*
 _chat/STOP
+web-chat/node_modules/
+web-chat/.wrangler/
+web-chat/bun.lock*
+_chat/watch*.log
+_chat/PRIMER.md

@@ -1,0 +1,11 @@
+name = "shfoot"
+main = "worker.js"
+compatibility_date = "2026-06-01"
+
+[vars]
+AGENT_KEY = "e8f751d692ddf86bfdf804e4"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "shfoot-chat"
+database_id = "6e5dd5e6-49cc-4051-8aec-45a32c572e88"
