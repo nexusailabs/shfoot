@@ -23,6 +23,12 @@ echo "## deploy ##"
 ./deploy-all.sh 2>&1 | tee "$HOME/deploy.log"
 
 echo "" | tee -a "$HOME/deploy.log"
+echo "## POST-DEPLOY VERIFY (entryPoint must NOT have opentelemetry-instrument; status READY) ##" | tee -a "$HOME/deploy.log"
+for a in ai_gk_agent-sbGF2v9Uay ai_def_agent-jsgv7M6UfK ai_mid_agent-ZbTrQo7y6g ai_fwd1_agent-qthSxi8TdE ai_fwd2_agent-0LNpt2HRM5; do
+  echo "=== $a ===" | tee -a "$HOME/deploy.log"
+  aws bedrock-agentcore-control get-agent-runtime --region us-east-1 --agent-runtime-id "$a" \
+    --query '{status:status,version:agentRuntimeVersion,entryPoint:agentRuntimeArtifact.codeConfiguration.entryPoint}' 2>&1 | tee -a "$HOME/deploy.log"
+done
 echo "## RUNTIME ARNS (paste these 5 into the Player Portal) ##" | tee -a "$HOME/deploy.log"
 grep -ioE 'arn:aws:bedrock-agentcore:[^ "]*runtime/[A-Za-z0-9_.-]+' "$HOME/deploy.log" | sort -u | tee -a "$HOME/deploy.log"
 
