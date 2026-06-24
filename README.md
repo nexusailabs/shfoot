@@ -10,8 +10,22 @@ Companion to `~/ai-league/` (6/23). Same operator, next day, GO BUILD track.
 | `squad.py` | Strands 5-role Graph wiring (Pillar 1+3) + runtime adapter. `python3 squad.py --selftest` |
 | `prompts/{gk,def,mid,fwd}.md` | terse role system prompts. Tune wording, not the numbers. |
 
+## One-shot setup (any laptop, incl. venue Windows machine)
+Clone, then run the script for your OS. It creates `.venv`, installs deps, and runs the sanity checks. **The decision core is pure stdlib, so the sanity checks pass even if the strands/boto3 install fails** (only `squad.py` deploy needs them).
+
+```
+git clone https://github.com/nexusailabs/shfoot && cd shfoot
+```
+| OS | run |
+|---|---|
+| **Windows (cmd)** | double-click **`setup.bat`** (or `setup.bat` in a terminal) |
+| **Windows (PowerShell)** | `powershell -ExecutionPolicy Bypass -File .\setup.ps1` |
+| **macOS / Linux** | `bash setup.sh` |
+
+Expect `KEYS+CHAIN GREEN` and `OK` (23 tests). Clipboard schema-check on Windows: `Get-Clipboard | .venv\Scripts\python reconcile.py -`.
+
 ## On 6/24, in order
-0. **Activate the venv:** `source .venv/bin/activate` (strands + boto3 preinstalled, import path already verified).
+0. **Activate the venv** (the setup script already created it): Windows `.venv\Scripts\activate` · mac/Linux `source .venv/bin/activate`.
 1. **First 30 min = reconcile schema. Run `reconcile.py` FIRST.** Grab one real observation from the Player Portal, then:
    `pbpaste | python reconcile.py -`  (or `python reconcile.py portal_obs.json`).
    It reports missing/renamed keys, runs the full chain for all 5 roles, and probes the x-axis direction — the football analogue of the AI-League "verify INPUT != {} in minute 5". Fix `state_from_obs()` until it prints **GREEN**, then **eyeball direction in match 1**. Decision logic transfers unchanged.

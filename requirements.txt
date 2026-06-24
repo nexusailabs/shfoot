@@ -1,0 +1,6 @@
+# shfoot deploy deps — needed ONLY for squad.py (AgentCore deploy).
+# policy.py / reconcile.py / test_policy.py are pure stdlib and run without these.
+# Pinned to the versions verified on 2026-06-23. If a pin is unavailable on the
+# venue's Python, loosen to `strands-agents` / `boto3` (latest) and re-run squad.py --selftest.
+strands-agents==1.44.0
+boto3==1.43.36
