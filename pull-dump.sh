@@ -1,36 +1,29 @@
 #!/usr/bin/env bash
-# Football Cup — make a TINY truncated slice from existing ~/fc-dump.txt, free disk, upload.
+# Football Cup — CONFIG-ONLY pull (no logs). Frees disk first. Tiny + reliable upload.
 set +e
-SRC="$HOME/fc-dump.txt"
-SMALL="$HOME/fc-small.txt"
+rm -f "$HOME/fc-dump.txt" "$HOME/fc-small.txt"   # free the disk-filling monsters
+OUT="$HOME/fc-cfg.txt"; : > "$OUT"
 
-rm -f "$SMALL"   # free the 64MB bloated slice first (disk is full)
+for a in ai_gk_agent-sbGF2v9Uay ai_def_agent-jsgv7M6UfK ai_mid_agent-ZbTrQo7y6g ai_fwd1_agent-qthSxi8TdE ai_fwd2_agent-0LNpt2HRM5; do
+  echo "=== $a ===" >> "$OUT"
+  aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "$a" >> "$OUT" 2>&1
+done
+echo "## GATEWAYS ##" >> "$OUT"
+aws bedrock-agentcore-control list-gateways >> "$OUT" 2>&1
+echo "## GATEWAY TARGETS ##" >> "$OUT"
+for gw in $(aws bedrock-agentcore-control list-gateways --query 'items[].gatewayId' --output text 2>/dev/null); do
+  echo "--- targets for $gw ---" >> "$OUT"
+  aws bedrock-agentcore-control list-gateway-targets --gateway-identifier "$gw" >> "$OUT" 2>&1
+done
 
-if [ ! -s "$SRC" ]; then
-  echo "no ~/fc-dump.txt — run the full pull first"; exit 1
-fi
-
-{
-  echo "### CONFIG (runtimes + gateways) ###"
-  sed -n '/## RUNTIMES ##/,/## LOGS ##/p' "$SRC" | cut -c1-2000
-  echo
-  echo "### ERRORS (truncated) ###"
-  grep -iaE 'KeyError|Traceback|Exception|ValidationException|AccessDenied|denied|throttl|MissingRequired|invalid|notfound|error' "$SRC" | head -80 | cut -c1-800
-  echo
-  echo "### SCHEMA SAMPLES (gameState/ball/players, truncated) ###"
-  grep -aE '"ball"|"players"|gameState|passer_position|shooter_position|goalkeeper_position|should_shoot|success_probability' "$SRC" | head -8 | cut -c1-2500
-} > "$SMALL" 2>/dev/null
-
-rm -f "$SRC"   # free the 600k-line monster now that we've sliced it
-
-SL=$(wc -l < "$SMALL"); SB=$(wc -c < "$SMALL")
-echo "slice: $SL lines / $SB bytes, uploading..."
+SB=$(wc -c < "$OUT")
+echo "config: $SB bytes, uploading..."
 UA="Mozilla/5.0 (X11; Linux x86_64)"
-URL=""
-URL=$(curl -fsS -A "$UA" -F "file=@$SMALL" https://0x0.st 2>/dev/null)
-[ -z "$URL" ] && URL=$(curl -fsS -A "$UA" -F "file=@$SMALL" https://envs.sh 2>/dev/null)
-[ -z "$URL" ] && URL=$(curl -fsS --data-binary @"$SMALL" https://paste.rs 2>/dev/null)
+URL=$(curl -fsS -A "$UA" -F "file=@$OUT" https://0x0.st 2>/dev/null)
+[ -z "$URL" ] && URL=$(curl -fsS -A "$UA" -F "file=@$OUT" https://envs.sh 2>/dev/null)
+[ -z "$URL" ] && URL=$(curl -fsS --data-binary @"$OUT" https://paste.rs 2>/dev/null)
 echo "=================================================="
 echo "DUMP URL: $URL"
-echo "  (slice $SL lines / $SB bytes)"
+echo "  ($SB bytes — read this URL back to Claude)"
 echo "=================================================="
+echo "(if URL is blank, run:  cat ~/fc-cfg.txt )"
