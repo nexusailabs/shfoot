@@ -60,6 +60,20 @@ const HTML = `<!doctype html>
     </ul>
   </div>
 
+  <div class="card" style="border-color:#4a3a1f">
+    <div class="grp">⏱️ 빌드 일정 (12:00 시작 → 14:00 본경기)</div>
+    <ul>
+      <li><b>12:00</b> 워크숍 열고 구조 훑기</li>
+      <li><b>12:15</b> CloudShell 들어가 clone 실행</li>
+      <li><b>12:20</b> Gateway 전술툴 배포(스크립트 자동)</li>
+      <li><b>12:35</b> Harness Agent 5개 생성(프롬프트+모델+권한)</li>
+      <li><b>12:50</b> Player Portal에 ARN → 첫 연습경기</li>
+      <li><b>13:10</b> Memory/Observability 설정</li>
+      <li><b>13:10–14:00</b> 반복 최적화(프롬프트·모델·로그·지시문)</li>
+      <li><b>14:00</b> 본경기 시작</li>
+    </ul>
+  </div>
+
   <h2><span class="n">1</span>입장 (빌드 포털 열기)</h2>
   <div class="card">
     <div class="grp">이게 뭐냐</div>선수를 만드는 AWS 워크숍 사이트. 왼쪽 단계별 목차가 <b>"정답지"</b> — 명령어가 거기 다 적혀있으니 그대로 복붙하면 됨.
