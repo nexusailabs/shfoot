@@ -9,7 +9,10 @@ echo "## clone ##"
 git clone -q https://github.com/nexusailabs/shfoot || { echo "clone failed"; exit 1; }
 cd shfoot/champion/deploy/ai-team-champion || exit 1
 
-command -v agentcore >/dev/null || pip install -q --user bedrock-agentcore-starter-toolkit
+# CloudShell runs inside a virtualenv -> plain pip install (NOT --user).
+command -v agentcore >/dev/null || pip install -q bedrock-agentcore-starter-toolkit
+hash -r 2>/dev/null
+command -v agentcore >/dev/null || { echo "ERROR: agentcore still not on PATH after install"; pip show bedrock-agentcore-starter-toolkit 2>/dev/null | head -3; }
 export AWS_DEFAULT_REGION=us-east-1
 
 echo "## deploy ##"
