@@ -117,9 +117,13 @@ ROLE_CONFIG: dict[int, RoleConfig] = {
 }
 
 LOW_STAMINA = 18.0               # lowered: attacking play needs sprints; only freeze when truly gassed
-SHOOT_MIN_PROB = 0.34            # attacking: take more shots; finishing comes from POSITION (carry-to-spot) not just threshold
-SHOOT_NOW_PROB = 0.55           # high-confidence: shoot immediately, never pass it off
-CARRY_TO_SHOOT_DIST = 0.55      # fraction of FIELD_X; near goal but low prob -> carry to a better angle
+SHOOT_MIN_PROB = 0.42           # only shoot if the shot model and geometry agree it is real
+SHOOT_NOW_PROB = 0.62           # high-confidence: shoot immediately, never pass it off
+CARRY_TO_SHOOT_DIST = 0.62      # fraction of FIELD_X; near goal but low prob -> carry to a better angle
+SHOT_REAL_CHANCE_DIST = 0.43    # fraction of FIELD_X; filters long/non-registering SHOOT commands
+SHOT_CENTER_BAND = 1.15         # multiple of GOAL_HALF_WIDTH for normal on-frame shots
+SHOT_CLOSE_WIDE_BAND = 1.65     # allow tight-angle shots only when very close to goal
+SUPPORT_MIN_MOVE = 0.07         # fraction of FIELD_X before re-issuing support MOVE_TO
 
 
 # --------------------------------------------------------------------------- #
@@ -382,6 +386,19 @@ def _forwardness(v: View, x: float) -> float:
     return (x - v.me_xy[0]) * v.dir
 
 
+def _shot_is_real_chance(v: View, x: float, y: float, shot: dict) -> bool:
+    """Geometry gate for SHOOT. The probability model is optimistic on the small
+    field because the angle term saturates early; require an actually on-frame
+    position before emitting a SHOOT command."""
+    toward_goal = (v.opp_goal_x - x) * v.dir
+    if toward_goal <= 0:
+        return False
+    goal_dx = abs(v.opp_goal_x - x)
+    central = abs(y) <= GOAL_HALF_WIDTH * SHOT_CENTER_BAND
+    close_wide = goal_dx <= _sx(0.20) and abs(y) <= GOAL_HALF_WIDTH * SHOT_CLOSE_WIDE_BAND
+    return shot["dist"] <= _sx(SHOT_REAL_CHANCE_DIST) and (central or close_wide)
+
+
 def _ball_rank(v: View) -> int:
     """0-based rank of me by distance to the ball among my OUTFIELD team (GK
     excluded). Deterministic (x,y) tiebreak so every agent computes the same
@@ -402,6 +419,36 @@ def _ball_rank(v: View) -> int:
 def _closest_teammate_to_ball_is_me(v: View) -> bool:
     """True for exactly one outfield agent (rank 0)."""
     return _ball_rank(v) == 0
+
+
+def _support_run(v: View, role_id: int, holder: dict | None):
+    """Possession support shape: MID offers the recycle/cutback; the spare FWD
+    attacks the box. GK+DEF are intentionally excluded so counter cover stays."""
+    if holder is None or _pid(holder) == role_id or role_id in (GK, DEF):
+        return None
+    hx, hy = _field_xy(holder)
+    carrier = _pid(holder)
+    final_third = (v.opp_goal_x - hx) * v.dir <= _sx(0.42)
+
+    if role_id == MID:
+        if carrier in (FWD1, FWD2) and final_third:
+            return hx - v.dir * _sx(0.20), -hy * 0.45, False, "offer cutback outlet"
+        return hx + v.dir * _sx(0.18), hy * 0.35, True, "show central outlet"
+
+    if role_id in (FWD1, FWD2):
+        side = -1 if role_id == FWD1 else 1
+        if final_third:
+            far_side = (-1 if hy > 0 else 1) if carrier in (FWD1, FWD2) else side
+            return v.opp_goal_x - v.dir * _sx(0.10), far_side * GOAL_HALF_WIDTH * 0.75, True, "attack box outlet"
+        return hx + v.dir * _sx(0.24), side * _sz(0.24), True, "stretch forward outlet"
+    return None
+
+
+def _center_restart(v: View) -> bool:
+    """Kickoff/after-goal shape trigger when the ball is dead-center and loose."""
+    return (not v.we_have_ball
+            and abs(v.ball_xy[0]) <= _sx(0.08)
+            and abs(v.ball_xy[1]) <= _sz(0.10))
 
 
 # --------------------------------------------------------------------------- #
@@ -439,11 +486,12 @@ def decide(game_state: dict, team_id: int, my_id: int) -> Cmd:
         shot = evaluate_shot(v.me_xy[0], v.me_xy[1], gk_opp, v.opp_goal_x,
                              [_field_xy(o) for o in v.opponents])
         attacker = role_id in (MID, FWD1, FWD2)
+        real_chance = _shot_is_real_chance(v, v.me_xy[0], v.me_xy[1], shot)
         # 1) HIGH-CONFIDENCE shot -> take it, never pass it off.
-        if shot["dist"] <= _shoot_dist(cfg) and shot["prob"] >= SHOOT_NOW_PROB:
+        if real_chance and shot["dist"] <= _shoot_dist(cfg) and shot["prob"] >= SHOOT_NOW_PROB:
             return Cmd("SHOOT", {"aim_location": shot["aim"], "power": shot["power"]}, 0, f"shoot! p={shot['prob']}")
         # 2) DECENT shot in range -> shoot unless a teammate has a clearly better look.
-        if shot["dist"] <= _shoot_dist(cfg) and shot["prob"] >= SHOOT_MIN_PROB:
+        if real_chance and shot["dist"] <= _shoot_dist(cfg) and shot["prob"] >= SHOOT_MIN_PROB:
             opts = calculate_pass_options(v.me_xy, v.teammates, v.opponents)
             # Pass it off ONLY if a teammate genuinely has a BETTER shot (Codex Q2:
             # the old test checked pass-success+forwardness, not the receiver's shot).
@@ -453,7 +501,8 @@ def decide(game_state: dict, team_id: int, my_id: int) -> Cmd:
                     continue
                 recv_shot = evaluate_shot(o["x"], o["y"], gk_opp, v.opp_goal_x,
                                           [_field_xy(opp) for opp in v.opponents])
-                if recv_shot["prob"] >= max(SHOOT_NOW_PROB, shot["prob"] + 0.10):
+                if (_shot_is_real_chance(v, o["x"], o["y"], recv_shot)
+                        and recv_shot["prob"] >= max(SHOOT_NOW_PROB, shot["prob"] + 0.10)):
                     better_pass = o
                     break
             if better_pass is not None:
@@ -478,8 +527,20 @@ def decide(game_state: dict, team_id: int, my_id: int) -> Cmd:
 
         # pass to the best forward option through a clear lane
         opts = calculate_pass_options(v.me_xy, v.teammates, v.opponents)
-        fwd_opts = [o for o in opts if _forwardness(v, o["x"]) > _sx(0.11) and o["success"] > 0.45]
-        pool = fwd_opts or [o for o in opts if o["success"] > 0.55]
+        scored_opts = []
+        for o in opts:
+            recv_shot = evaluate_shot(o["x"], o["y"], gk_opp, v.opp_goal_x,
+                                      [_field_xy(opp) for opp in v.opponents])
+            scored_opts.append((o, recv_shot))
+        chance_opts = [
+            (o, s) for o, s in scored_opts
+            if o["success"] > 0.62 and _shot_is_real_chance(v, o["x"], o["y"], s) and s["prob"] >= SHOOT_MIN_PROB
+        ]
+        if chance_opts:
+            o, s = max(chance_opts, key=lambda item: (item[1]["prob"], item[0]["success"]))
+            return Cmd("PASS", {"target_player_id": o["pid"], "type": o["type"]}, 0, f"pass chance->{o['pid']} p={s['prob']}")
+        fwd_opts = [o for o in opts if _forwardness(v, o["x"]) > _sx(0.11) and o["success"] > 0.58]
+        pool = fwd_opts or [o for o in opts if o["success"] > 0.64]
         if pool:
             o = pool[0]
             return Cmd("PASS", {"target_player_id": o["pid"], "type": o["type"]}, 0, f"pass->{o['pid']} s={round(o['success'],2)}")
@@ -494,6 +555,15 @@ def decide(game_state: dict, team_id: int, my_id: int) -> Cmd:
     #    all-swarm opponent that no real team plays. Don't chase that metric.)
     ball_d = _hypot(*v.me_xy, *v.ball_xy)
     in_zone = _hypot(*v.me_xy, *anchor_world(role_id, team_id)) <= _zone_tol(cfg) * 1.5
+
+    # 0) deterministic center restart: MID attacks the loose center ball while
+    #    both strikers open lanes. GK+DEF stay in the normal home shape.
+    if _center_restart(v):
+        if role_id == MID:
+            return _move(v.ball_xy[0], v.ball_xy[1], True, "restart claim center")
+        if role_id in (FWD1, FWD2):
+            side = -1 if role_id == FWD1 else 1
+            return _move(v.dir * _sx(0.34), side * _sz(0.18), True, "restart forward lane")
 
     # 1) DEF is a DEFENDER FIRST. Live #1 we played 0 MARK + 188 PRESS and got
     #    countered 4x. So DEF marks the most dangerous attacker by default and
@@ -522,6 +592,14 @@ def decide(game_state: dict, team_id: int, my_id: int) -> Cmd:
         return Cmd("PRESS_BALL", {"intensity": 0.8}, 2, "closest+in-zone press")
 
     # 3) hold shape: recover to anchor (with attacking push if we possess)
+    if v.we_have_ball:
+        holder = possession_holder(game_state)
+        support = _support_run(v, role_id, holder)
+        if support is not None:
+            tx, ty, sprint, reason = support
+            if _hypot(*v.me_xy, tx, ty) > _sx(SUPPORT_MIN_MOVE):
+                return _move(tx, ty, sprint and not tired, reason)
+
     push = cfg.push_when_attacking if v.we_have_ball else 0.0
     ax, ay = anchor_world(role_id, team_id, push)
     if _hypot(*v.me_xy, ax, ay) > _zone_tol(cfg):
