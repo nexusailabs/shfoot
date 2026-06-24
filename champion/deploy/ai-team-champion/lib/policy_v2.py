@@ -63,15 +63,20 @@ class RoleConfig:
 # Defaults tuned from the baseline post-mortem: baseline swarms (everyone within
 # 20u presses) and over-commits forwards. We hold a compact 1-1-2 with strict
 # single-presser discipline and two staggered strikers for the long-shot meta.
+# Tuned from LIVE match #1 vs Benchmark (lost 1-4): we over-pressed (188 PRESS,
+# 0 MARK -> exposed backline) and spammed shots (53 SHOOT -> 1 on target). The
+# winner played POSITIONING + efficient passing. So: tighter press triggers,
+# shorter shoot ranges, lower risk -> hold shape, mark, and shoot only high-prob.
 ROLE_CONFIG: dict[int, RoleConfig] = {
-    GK:   RoleConfig(anchor_ax=-0.92, anchor_ay=0.00, zone_tol=14.0, press_trigger=10.0, shoot_range=0.0,  push_when_attacking=0.05, risk=0.0),
-    DEF:  RoleConfig(anchor_ax=-0.45, anchor_ay=0.00, zone_tol=24.0, press_trigger=16.0, shoot_range=0.0,  push_when_attacking=0.15, risk=0.1),
-    MID:  RoleConfig(anchor_ax=-0.02, anchor_ay=0.00, zone_tol=30.0, press_trigger=18.0, shoot_range=30.0, push_when_attacking=0.35, risk=0.45),
-    FWD1: RoleConfig(anchor_ax=0.50,  anchor_ay=-0.34, zone_tol=34.0, press_trigger=16.0, shoot_range=40.0, push_when_attacking=0.30, risk=0.8),
-    FWD2: RoleConfig(anchor_ax=0.50,  anchor_ay=0.34,  zone_tol=34.0, press_trigger=16.0, shoot_range=40.0, push_when_attacking=0.30, risk=0.8),
+    GK:   RoleConfig(anchor_ax=-0.92, anchor_ay=0.00, zone_tol=14.0, press_trigger=8.0,  shoot_range=0.0,  push_when_attacking=0.03, risk=0.0),
+    DEF:  RoleConfig(anchor_ax=-0.45, anchor_ay=0.00, zone_tol=22.0, press_trigger=11.0, shoot_range=0.0,  push_when_attacking=0.10, risk=0.05),
+    MID:  RoleConfig(anchor_ax=-0.02, anchor_ay=0.00, zone_tol=26.0, press_trigger=13.0, shoot_range=22.0, push_when_attacking=0.30, risk=0.30),
+    FWD1: RoleConfig(anchor_ax=0.50,  anchor_ay=-0.32, zone_tol=30.0, press_trigger=11.0, shoot_range=28.0, push_when_attacking=0.28, risk=0.45),
+    FWD2: RoleConfig(anchor_ax=0.50,  anchor_ay=0.32,  zone_tol=30.0, press_trigger=11.0, shoot_range=28.0, push_when_attacking=0.28, risk=0.45),
 }
 
-LOW_STAMINA = 25.0               # below this (0..100) avoid optional sprint actions
+LOW_STAMINA = 35.0               # below this (0..100) avoid optional sprint actions
+SHOOT_MIN_PROB = 0.45            # only shoot when the inlined evaluate_shot prob clears this
 
 
 # --------------------------------------------------------------------------- #
@@ -345,13 +350,13 @@ def decide(game_state: dict, team_id: int, my_id: int) -> Cmd:
     if v.i_have_ball:
         shot = evaluate_shot(v.me_xy[0], v.me_xy[1], gk_opp, v.opp_goal_x,
                              [_xy(o) for o in v.opponents])
-        in_range = shot["dist"] <= cfg.shoot_range
-        # shoot if the math says so within our range; risk widens the trigger
-        if in_range and (shot["should_shoot"] or (cfg.risk >= 0.7 and shot["prob"] > 0.18)):
-            # genuine shoot-vs-pass tie at the edge -> flag for optional LLM
+        # SHOT DISCIPLINE (live #1: 53 SHOOT -> 1 on target). Shoot ONLY when in
+        # range AND the inlined prob clears SHOOT_MIN_PROB. Otherwise pass/carry.
+        if shot["dist"] <= cfg.shoot_range and shot["prob"] >= SHOOT_MIN_PROB:
             opts = calculate_pass_options(v.me_xy, v.teammates, v.opponents)
             best_pass = opts[0] if opts else None
-            gray = 0.18 < shot["prob"] < 0.30 and best_pass and best_pass["success"] > 0.6
+            gray = (SHOOT_MIN_PROB <= shot["prob"] < SHOOT_MIN_PROB + 0.10
+                    and best_pass is not None and best_pass["success"] > 0.7)
             return Cmd("SHOOT", {"aim_location": shot["aim"], "power": shot["power"]}, 0, f"shoot p={shot['prob']}", gray)
 
         # DEF deep in our own third under pressure -> clear forward, don't dribble
@@ -378,20 +383,29 @@ def decide(game_state: dict, team_id: int, my_id: int) -> Cmd:
     #    all-swarm opponent that no real team plays. Don't chase that metric.)
     ball_d = _hypot(*v.me_xy, *v.ball_xy)
     in_zone = _hypot(*v.me_xy, *anchor_world(role_id, team_id)) <= cfg.zone_tol * 1.5
-    if (not v.we_have_ball and ball_d <= cfg.press_trigger
-            and _closest_teammate_to_ball_is_me(v) and in_zone and not tired):
-        carrier = _on_ball_opp(v)
-        if carrier is not None and _hypot(*v.me_xy, *_xy(carrier)) <= 6.0 and cfg.risk >= 0.1 and not tired:
-            return Cmd("SLIDE_TACKLE", {"target_player_id": _pid(carrier), "sprint": True, "distance": 4.0}, 0, "tackle carrier")
-        return Cmd("PRESS_BALL", {"intensity": 0.85}, 2, "closest+in-zone press")
 
-    # 2) DEF marks the most dangerous intruder near our goal
+    # 1) DEF is a DEFENDER FIRST. Live #1 we played 0 MARK + 188 PRESS and got
+    #    countered 4x. So DEF marks the most dangerous attacker by default and
+    #    only leaves the mark to win a ball that is right at its feet.
     if role_id == DEF and not v.we_have_ball:
-        intruders = [o for o in v.opponents if abs(_xy(o)[0] - v.my_goal_x) < 35]
+        if ball_d <= 6.0 and _closest_teammate_to_ball_is_me(v) and not tired:
+            carrier = _on_ball_opp(v)
+            if carrier is not None and cfg.risk >= 0.05:
+                return Cmd("SLIDE_TACKLE", {"target_player_id": _pid(carrier), "sprint": True, "distance": 4.0}, 0, "DEF tackle at feet")
+            return Cmd("PRESS_BALL", {"intensity": 0.8}, 2, "DEF press at feet")
+        intruders = [o for o in v.opponents if abs(_xy(o)[0] - v.my_goal_x) < 45]
         if intruders:
             danger = min(intruders, key=lambda o: abs(_xy(o)[0] - v.my_goal_x))
-            if abs(_xy(danger)[0] - v.my_goal_x) < 30:
-                return Cmd("MARK", {"target_player_id": _pid(danger), "tightness": "TIGHT"}, 3, "mark intruder")
+            return Cmd("MARK", {"target_player_id": _pid(danger), "tightness": "TIGHT"}, 3, "DEF mark danger")
+
+    # 2) single-presser for the rest: ONLY the closest outfielder, in zone, not
+    #    tired. Holds shape, no swarm, no over-commit (DEF excluded -> stays home).
+    if (not v.we_have_ball and role_id != DEF and ball_d <= cfg.press_trigger
+            and _closest_teammate_to_ball_is_me(v) and in_zone and not tired):
+        carrier = _on_ball_opp(v)
+        if carrier is not None and _hypot(*v.me_xy, *_xy(carrier)) <= 6.0 and cfg.risk >= 0.3 and not tired:
+            return Cmd("SLIDE_TACKLE", {"target_player_id": _pid(carrier), "sprint": True, "distance": 4.0}, 0, "tackle carrier")
+        return Cmd("PRESS_BALL", {"intensity": 0.8}, 2, "closest+in-zone press")
 
     # 3) hold shape: recover to anchor (with attacking push if we possess)
     push = cfg.push_when_attacking if v.we_have_ball else 0.0
