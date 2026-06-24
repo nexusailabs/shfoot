@@ -14,11 +14,11 @@ app = BedrockAgentCoreApp()
 
 MY_PLAYER_ID = 3
 POSITION_LABEL = "FWD1"
-# Burst-stagger (hypothesis F): the engine sends all 5 invokes at tick start; five
-# zero-LLM agents finishing together in ~0.17ms hammer the engine's concurrent-SSE
-# handling (LLM agents naturally stagger on model latency, ~400-500ms in-match vs our
-# ~975ms). De-sync our response times by player id so they don't all close at once.
-_STAGGER_S = MY_PLAYER_ID * 0.06   # 0/60/120/180/240ms
+# Burst-stagger (hypothesis F) was REMOVED: live match #5 proved it made latency WORSE
+# (946ms with stagger vs 861ms without), and GK with 0 stagger was still 705ms. So the
+# ~700ms is a fixed overhead ADDED to handler time, not a fast-close/burst penalty. The
+# one remaining infra difference vs the morning LLM build (which ran ~450ms on the SAME
+# invoke path + deployment_type) is observability — restored to enabled:true below.
 
 # --- latency instrumentation ---------------------------------------------
 # _PROC_START is set ONCE per process (microVM). If every invoke logs a small
@@ -53,9 +53,6 @@ async def invoke(payload, context):
           "proc_age_s": round(time.time() - _PROC_START, 1), "handler_ms": _h_ms}),
           flush=True)
     # SSE streaming yield is MANDATORY (a non-streaming return failed fitness 0/5).
-    # Stagger the close by player id to de-sync the 5-agent burst (hypothesis F).
-    if _STAGGER_S:
-        await asyncio.sleep(_STAGGER_S)
     yield json.dumps([cmd])
 
 

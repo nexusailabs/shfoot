@@ -11,3 +11,4 @@ web-chat/.wrangler/
 web-chat/bun.lock*
 _chat/watch*.log
 _chat/PRIMER.md
+_build/
