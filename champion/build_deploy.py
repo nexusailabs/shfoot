@@ -83,10 +83,13 @@ if __name__ == "__main__":
 '''
 
 REQS = """\
-# Championship agent — zero-LLM, deterministic policy. No strands, no OTEL.
-# OTEL was removed: it sat on the cold-start hot path and pushed match latency to
-# 559ms (>500ms budget) in live #1. Faster cold start > observability for a 2-min game.
+# Championship agent — zero-LLM, deterministic policy. No strands (no model round-trip).
+# OTEL/observability RESTORED: the morning LLM build ran ~450ms WITH aws-opentelemetry-distro
+# + observability:true on the SAME invoke path; our no-OTEL build was 705ms. Removing OTEL
+# (thought to cause a 559ms cold-start in live #1) was likely the latency regression, not the
+# cure. This restores the morning build's exact observability infra to isolate the ~700ms gap.
 bedrock-agentcore>=1.0.3
+aws-opentelemetry-distro>=0.10.0
 """
 
 YAML_TMPL = '''\
