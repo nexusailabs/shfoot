@@ -76,7 +76,7 @@ ROLE_CONFIG: dict[int, RoleConfig] = {
 }
 
 LOW_STAMINA = 22.0               # below this (0..100, normalized) avoid optional sprint actions
-SHOOT_MIN_PROB = 0.45            # only shoot when the inlined evaluate_shot prob clears this
+SHOOT_MIN_PROB = 0.40            # shoot only above this inlined prob (Codex #3: 0.45 starved shots; 0.40 still rejects bad long shots)
 
 
 # --------------------------------------------------------------------------- #
@@ -279,9 +279,12 @@ def _parse(game_state: dict, team_id: int, my_id: int) -> View | None:
     mine = [p for p in players if _is_mine(p, team_id) and _pid(p) != my_id]
     opp = [p for p in players if not _is_mine(p, team_id)]
     my_goal_x, opp_goal_x = goal_x(team_id)
-    holder = possession_holder(game_state)              # team-correct (global id)
+    holder = possession_holder(game_state)              # team-correct (disambiguated)
     we_have = bool(holder is not None and _is_mine(holder, team_id))
-    i_have = bool(holder is not None and _aid(holder) == _aid(me))
+    # i_have_ball by OBJECT IDENTITY (holder and me are from the same players list).
+    # _aid() equality is wrong under duplicate agentId_N (opp's same-numbered player
+    # would also match -> ghost on-ball commands). Codex gate #3 blocker.
+    i_have = (holder is me)
     return View(
         me=me, me_xy=_xy(me), ball_xy=ball_xy, teammates=mine, opponents=opp,
         poss=(_pid(holder) if holder is not None else None),
