@@ -1,0 +1,1 @@
+reconcile.py 돌렸더니 DIRECTION UNVERIFIED 떠. 이거 문제야? 어떻게 닫아?

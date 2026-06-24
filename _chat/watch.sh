@@ -11,7 +11,7 @@
 
 set -uo pipefail
 cd "$(dirname "$0")/.."          # repo root
-POLL_SECS="${POLL_SECS:-120}"
+POLL_SECS="${POLL_SECS:-60}"
 echo "[watch] relay auto-responder up. polling every ${POLL_SECS}s. (touch _chat/STOP to quit)"
 
 answer() {
