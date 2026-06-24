@@ -21,7 +21,7 @@ agents:
       protocol_configuration:
         server_protocol: HTTP
       observability:
-        enabled: true
+        enabled: false
       lifecycle_configuration:
         idle_runtime_session_timeout: null
         max_lifetime: null

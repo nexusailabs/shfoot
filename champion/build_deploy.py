@@ -62,9 +62,10 @@ if __name__ == "__main__":
 '''
 
 REQS = """\
-# Championship agent — zero-LLM, deterministic policy. No strands needed.
+# Championship agent — zero-LLM, deterministic policy. No strands, no OTEL.
+# OTEL was removed: it sat on the cold-start hot path and pushed match latency to
+# 559ms (>500ms budget) in live #1. Faster cold start > observability for a 2-min game.
 bedrock-agentcore>=1.0.3
-aws-opentelemetry-distro>=0.10.0
 """
 
 YAML_TMPL = '''\
@@ -91,7 +92,7 @@ agents:
       protocol_configuration:
         server_protocol: HTTP
       observability:
-        enabled: true
+        enabled: false
       lifecycle_configuration:
         idle_runtime_session_timeout: null
         max_lifetime: null

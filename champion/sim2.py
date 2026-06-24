@@ -101,14 +101,16 @@ class World:
         for t in (0, 1):
             code = "home" if t == 0 else "away"
             for p in self.players[t]:
-                # GLOBALLY-UNIQUE agentId (home_0..away_4) so possession never
-                # collides across teams; trailing int still = per-team index 0-4.
-                players.append({"agentId": f"{code}_{p.pid}", "teamCode": code,
+                # DUPLICATE agentId across teams ('agentId_3' on both), matching the
+                # real/sample contract — so the sim exercises possession_holder's
+                # duplicate-id disambiguation instead of hiding that live bug.
+                players.append({"agentId": f"agentId_{p.pid}", "teamCode": code,
                                 "position": {"x": p.x, "y": p.y}, "stamina": p.stam})
         ball = {"position": {"x": self.bx, "y": self.by}}
         if self.carrier is not None:
             ct, cp = self.carrier
-            ball["possessionAgentId"] = f"{'home' if ct == 0 else 'away'}_{cp}"
+            ball["possessionAgentId"] = f"agentId_{cp}"
+            ball["possessionTeam"] = "home" if ct == 0 else "away"
         return {"ball": ball, "score": {"home": self.score[0], "away": self.score[1]},
                 "gameTime": 0, "players": players}
 

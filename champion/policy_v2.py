@@ -75,7 +75,7 @@ ROLE_CONFIG: dict[int, RoleConfig] = {
     FWD2: RoleConfig(anchor_ax=0.50,  anchor_ay=0.32,  zone_tol=30.0, press_trigger=11.0, shoot_range=28.0, push_when_attacking=0.28, risk=0.45),
 }
 
-LOW_STAMINA = 35.0               # below this (0..100) avoid optional sprint actions
+LOW_STAMINA = 22.0               # below this (0..100, normalized) avoid optional sprint actions
 SHOOT_MIN_PROB = 0.45            # only shoot when the inlined evaluate_shot prob clears this
 
 
@@ -119,22 +119,35 @@ def _possession(ball: dict):
 
 
 def possession_holder(game_state: dict):
-    """The player dict currently holding the ball, resolved by GLOBAL identity
-    (full possessionAgentId), or None. Falls back to possessionPlayerId +
-    possessionTeam when the engine sends the old format."""
+    """The player dict holding the ball, or None.
+
+    ROBUST to the sample/live format where BOTH teams use a duplicate agentId
+    like 'agentId_3' and possessionAgentId='agentId_3' (Codex live-#1 bug: exact
+    match grabbed the first/home player -> false possession -> ghost shots). So:
+    collect all id-matches, then disambiguate by possessionTeam if given, else by
+    'the holder is physically on the ball' (nearest match to the ball)."""
     ball = game_state.get("ball", {})
     players = game_state.get("players", [])
+    ball_xy = _xy(ball.get("position", {"x": 0, "y": 0}))
+    pteam = ball.get("possessionTeam")
     aid = ball.get("possessionAgentId")
-    if aid is not None:
-        return next((p for p in players if _aid(p) == str(aid)), None)
-    ppid = ball.get("possessionPlayerId")
-    if ppid is None:
+    cands = [p for p in players if _aid(p) == str(aid)] if aid is not None else []
+    if not cands:
+        ppid = ball.get("possessionPlayerId")
+        if ppid is not None:
+            cands = [p for p in players if _pid(p) == ppid]
+    if not cands:
         return None
-    pteam = ball.get("possessionTeam")          # "home"/"away" if provided
-    for p in players:
-        if _pid(p) == ppid and (pteam is None or p.get("teamCode") == pteam):
-            return p
-    return None
+    if len(cands) == 1:
+        return cands[0]
+    if pteam is not None:
+        want = "home" if pteam in (0, "0", "home") else "away"
+        tm = [p for p in cands if str(p.get("teamCode")) == want]
+        if tm:
+            cands = tm
+            if len(cands) == 1:
+                return cands[0]
+    return min(cands, key=lambda p: _hypot(*_xy(p), *ball_xy))
 
 
 def goal_x(team_id: int) -> tuple[float, float]:
@@ -274,8 +287,19 @@ def _parse(game_state: dict, team_id: int, my_id: int) -> View | None:
         poss=(_pid(holder) if holder is not None else None),
         i_have_ball=i_have, we_have_ball=we_have,
         team_id=team_id, my_goal_x=my_goal_x, opp_goal_x=opp_goal_x,
-        dir=(1 if team_id == 0 else -1), stamina=float(me.get("stamina", 100)),
+        dir=(1 if team_id == 0 else -1), stamina=_norm_stamina(me.get("stamina", 100)),
     )
+
+
+def _norm_stamina(raw) -> float:
+    """Normalize stamina to 0..100. Live/sample state may send a 0..1 fraction
+    (e.g. 0.95) OR a 0..100 value; on the 0..1 scale every player would read as
+    'tired' against LOW_STAMINA and freeze the policy (Codex live-#1 bug)."""
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return 100.0
+    return v * 100.0 if v <= 1.0 else v
 
 
 def anchor_world(role_id: int, team_id: int, push: float = 0.0) -> tuple[float, float]:
