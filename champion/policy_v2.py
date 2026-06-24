@@ -124,6 +124,14 @@ SHOT_REAL_CHANCE_DIST = 0.43    # fraction of FIELD_X; filters long/non-register
 SHOT_CENTER_BAND = 1.15         # multiple of GOAL_HALF_WIDTH for normal on-frame shots
 SHOT_CLOSE_WIDE_BAND = 1.65     # allow tight-angle shots only when very close to goal
 SUPPORT_MIN_MOVE = 0.07         # fraction of FIELD_X before re-issuing support MOVE_TO
+PRESS_NEAR_DIST = 0.22          # real-scale nearest-presser distance to the carrier
+PRESS_TIGHT_DIST = 0.12         # tight enough that the carrier must release now
+PRESS_RELEASE_MIN_SUCCESS = 0.44
+
+
+_STATE = {
+    "press": {},                 # team_id -> {"t": gameTime, "ema": high-press score}
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -386,6 +394,15 @@ def _forwardness(v: View, x: float) -> float:
     return (x - v.me_xy[0]) * v.dir
 
 
+def _upfield(v: View, x: float) -> float:
+    """Absolute attacking-frame x (+ = closer to opponent goal)."""
+    return x * v.dir
+
+
+def _clamp01(x: float) -> float:
+    return max(0.0, min(1.0, x))
+
+
 def _shot_is_real_chance(v: View, x: float, y: float, shot: dict) -> bool:
     """Geometry gate for SHOOT. The probability model is optimistic on the small
     field because the angle term saturates early; require an actually on-frame
@@ -421,7 +438,77 @@ def _closest_teammate_to_ball_is_me(v: View) -> bool:
     return _ball_rank(v) == 0
 
 
-def _support_run(v: View, role_id: int, holder: dict | None):
+def _press_profile(game_state: dict, v: View) -> dict:
+    """Shared deterministic estimate of opponent high press from the full obs."""
+    holder = possession_holder(game_state)
+    if holder is None or not _is_mine(holder, v.team_id):
+        return {"score": 0.0, "direct": 0.0, "nearest": 999.0, "high": False, "holder": holder}
+
+    hx, hy = _field_xy(holder)
+    nearest = min((_hypot(hx, hy, *_field_xy(o)) for o in v.opponents), default=999.0)
+    our_half = sum(1 for o in v.opponents if _upfield(v, _field_xy(o)[0]) < _sx(0.08))
+    near_ball = sum(1 for o in v.opponents if _hypot(hx, hy, *_field_xy(o)) <= _sx(0.42))
+    close_score = _clamp01((_sx(PRESS_NEAR_DIST) - nearest) / max(_sx(PRESS_NEAR_DIST - PRESS_TIGHT_DIST), 1e-6))
+    half_score = _clamp01(our_half / 3.0)
+    crowd_score = _clamp01(near_ball / 3.0)
+    snapshot = 0.50 * close_score + 0.30 * half_score + 0.20 * crowd_score
+
+    gt = game_state.get("gameTime")
+    try:
+        tick = round(float(gt), 2)
+    except (TypeError, ValueError):
+        tick = None
+    if tick is None:
+        return {"score": snapshot, "direct": _clamp01(snapshot), "nearest": nearest, "high": snapshot >= 0.48, "holder": holder}
+    team_state = _STATE["press"].setdefault(v.team_id, {"t": None, "ema": snapshot})
+    if team_state["t"] != tick:
+        team_state["ema"] = snapshot if team_state["t"] is None else 0.65 * team_state["ema"] + 0.35 * snapshot
+        team_state["t"] = tick
+    score = max(snapshot, team_state["ema"])
+    return {"score": score, "direct": _clamp01(score), "nearest": nearest, "high": score >= 0.48, "holder": holder}
+
+
+def _carrier_under_pressure(v: View, press: dict) -> bool:
+    nearest = press.get("nearest", 999.0)
+    return nearest <= _sx(PRESS_TIGHT_DIST) or (press.get("high") and nearest <= _sx(PRESS_NEAR_DIST))
+
+
+def _pressure_release_option(v: View, scored_opts: list[tuple[dict, dict]], directness: float):
+    """Pick the fastest vertical escape pass when the carrier is being closed."""
+    candidates = []
+    for o, shot in scored_opts:
+        if o["pid"] == GK:
+            continue
+        gain = _forwardness(v, o["x"])
+        upfield = _upfield(v, o["x"])
+        lane_ok = o["success"] >= PRESS_RELEASE_MIN_SUCCESS and o["risk"] <= 0.66
+        if lane_ok and gain > _sx(0.03):
+            role_bonus = 0.18 if o["pid"] in (FWD1, FWD2) else (0.08 if o["pid"] == MID else -0.25)
+            shot_bonus = shot["prob"] if _shot_is_real_chance(v, o["x"], o["y"], shot) else 0.0
+            score = (
+                1.35 * gain / FIELD_X
+                + 0.55 * upfield / FIELD_X
+                + 0.75 * o["success"]
+                + 0.45 * shot_bonus
+                + 0.25 * directness
+                + role_bonus
+                - 0.25 * o["risk"]
+            )
+            candidates.append((score, o))
+    if candidates:
+        return max(candidates, key=lambda item: item[0])[1]
+
+    layoffs = [
+        o for o, _ in scored_opts
+        if o["pid"] != GK and o["success"] >= 0.60 and o["dist"] <= round(_sx(0.55), 1)
+        and _forwardness(v, o["x"]) >= -_sx(0.07)
+    ]
+    if layoffs:
+        return max(layoffs, key=lambda o: (o["success"], _forwardness(v, o["x"])))
+    return None
+
+
+def _support_run(v: View, role_id: int, holder: dict | None, directness: float = 0.0):
     """Possession support shape: MID offers the recycle/cutback; the spare FWD
     attacks the box. GK+DEF are intentionally excluded so counter cover stays."""
     if holder is None or _pid(holder) == role_id or role_id in (GK, DEF):
@@ -429,14 +516,21 @@ def _support_run(v: View, role_id: int, holder: dict | None):
     hx, hy = _field_xy(holder)
     carrier = _pid(holder)
     final_third = (v.opp_goal_x - hx) * v.dir <= _sx(0.42)
+    high_press = directness >= 0.48
 
     if role_id == MID:
+        if high_press:
+            if carrier in (FWD1, FWD2):
+                return hx - v.dir * _sx(0.16), hy * 0.25, True, "press layoff outlet"
+            return hx + v.dir * _sx(0.16), hy * 0.20, True, "press central outlet"
         if carrier in (FWD1, FWD2) and final_third:
             return hx - v.dir * _sx(0.20), -hy * 0.45, False, "offer cutback outlet"
         return hx + v.dir * _sx(0.18), hy * 0.35, True, "show central outlet"
 
     if role_id in (FWD1, FWD2):
         side = -1 if role_id == FWD1 else 1
+        if high_press and not final_third:
+            return hx + v.dir * _sx(0.38), side * _sz(0.30), True, "press in-behind outlet"
         if final_third:
             far_side = (-1 if hy > 0 else 1) if carrier in (FWD1, FWD2) else side
             return v.opp_goal_x - v.dir * _sx(0.10), far_side * GOAL_HALF_WIDTH * 0.75, True, "attack box outlet"
@@ -463,6 +557,7 @@ def decide(game_state: dict, team_id: int, my_id: int) -> Cmd:
 
     tired = v.stamina < LOW_STAMINA
     gk_opp = _gk_of(v.opponents)  # opponent keeper xy for shot eval
+    press = _press_profile(game_state, v)
 
     # ===================== GK =========================================== #
     if role_id == GK:
@@ -487,6 +582,7 @@ def decide(game_state: dict, team_id: int, my_id: int) -> Cmd:
                              [_field_xy(o) for o in v.opponents])
         attacker = role_id in (MID, FWD1, FWD2)
         real_chance = _shot_is_real_chance(v, v.me_xy[0], v.me_xy[1], shot)
+        directness = press["direct"]
         # 1) HIGH-CONFIDENCE shot -> take it, never pass it off.
         if real_chance and shot["dist"] <= _shoot_dist(cfg) and shot["prob"] >= SHOOT_NOW_PROB:
             return Cmd("SHOOT", {"aim_location": shot["aim"], "power": shot["power"]}, 0, f"shoot! p={shot['prob']}")
@@ -519,11 +615,13 @@ def decide(game_state: dict, team_id: int, my_id: int) -> Cmd:
             if _hypot(*v.me_xy, tx, ty) > _sx(0.05):
                 return _move(tx, ty, True, f"carry into shooting position (p was {shot['prob']})")
 
-        # DEF deep in our own third under pressure -> clear forward, don't dribble
-        # into a turnover.
+        # DEF deep in our own third under pressure is handled after pass scoring:
+        # release forward if a lane exists, clear only as the fallback.
         nearest_opp_d = min((_hypot(*v.me_xy, *_field_xy(o)) for o in v.opponents), default=999)
-        if role_id == DEF and abs(v.me_xy[0] - v.my_goal_x) < _sx(0.40) and nearest_opp_d < _press_dist(cfg):
-            return _move(v.opp_goal_x * 0.2, v.me_xy[1] + (_sz(0.23) if v.me_xy[1] <= 0 else -_sz(0.23)), True, "DEF clear under pressure")
+        def_deep_pressed = (
+            role_id == DEF and abs(v.me_xy[0] - v.my_goal_x) < _sx(0.40)
+            and nearest_opp_d < _press_dist(cfg)
+        )
 
         # pass to the best forward option through a clear lane
         opts = calculate_pass_options(v.me_xy, v.teammates, v.opponents)
@@ -532,6 +630,17 @@ def decide(game_state: dict, team_id: int, my_id: int) -> Cmd:
             recv_shot = evaluate_shot(o["x"], o["y"], gk_opp, v.opp_goal_x,
                                       [_field_xy(opp) for opp in v.opponents])
             scored_opts.append((o, recv_shot))
+        if (attacker or def_deep_pressed) and _carrier_under_pressure(v, press):
+            release = _pressure_release_option(v, scored_opts, directness)
+            if release is not None:
+                ptype = release["type"]
+                if _forwardness(v, release["x"]) > _sx(0.18):
+                    ptype = "THROUGH"
+                return Cmd("PASS", {"target_player_id": release["pid"], "type": ptype}, 0,
+                           f"press release->{release['pid']} s={round(release['success'],2)}")
+        if def_deep_pressed:
+            return _move(v.opp_goal_x * 0.2, v.me_xy[1] + (_sz(0.23) if v.me_xy[1] <= 0 else -_sz(0.23)), True, "DEF clear under pressure")
+
         chance_opts = [
             (o, s) for o, s in scored_opts
             if o["success"] > 0.62 and _shot_is_real_chance(v, o["x"], o["y"], s) and s["prob"] >= SHOOT_MIN_PROB
@@ -594,13 +703,18 @@ def decide(game_state: dict, team_id: int, my_id: int) -> Cmd:
     # 3) hold shape: recover to anchor (with attacking push if we possess)
     if v.we_have_ball:
         holder = possession_holder(game_state)
-        support = _support_run(v, role_id, holder)
+        support = _support_run(v, role_id, holder, press["direct"])
         if support is not None:
             tx, ty, sprint, reason = support
             if _hypot(*v.me_xy, tx, ty) > _sx(SUPPORT_MIN_MOVE):
                 return _move(tx, ty, sprint and not tired, reason)
 
     push = cfg.push_when_attacking if v.we_have_ball else 0.0
+    if v.we_have_ball and press["high"]:
+        if role_id == DEF:
+            push = min(push, 0.03)
+        elif role_id == MID:
+            push = min(push, 0.18)
     ax, ay = anchor_world(role_id, team_id, push)
     if _hypot(*v.me_xy, ax, ay) > _zone_tol(cfg):
         return _move(ax, ay, v.we_have_ball, "return to zone")
