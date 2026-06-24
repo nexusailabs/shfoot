@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>풋볼컵 현장 치트 · 6/24</title>
+<style>
+  :root{ --bg:#0b0f14; --panel:#131a22; --panel2:#0f1620; --line:#243240;
+    --ink:#e8eef5; --mut:#8aa0b4; --acc:#37d67a; --acc2:#ffcf4a; --warn:#ff6b6b; --mono:ui-monospace,SFMono-Regular,Menlo,monospace }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Apple SD Gothic Neo",sans-serif;
+    padding:env(safe-area-inset-top) 0 64px}
+  .wrap{max-width:760px;margin:0 auto;padding:18px}
+  header{padding:8px 0 14px;border-bottom:1px solid var(--line);margin-bottom:18px}
+  h1{font-size:22px;margin:0 0 4px;letter-spacing:-.01em}
+  .sub{color:var(--mut);font-size:13px}
+  h2{font-size:17px;margin:26px 0 10px;color:var(--acc);letter-spacing:-.01em}
+  h2 .n{color:var(--mut);font-weight:600;margin-right:6px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:10px 0}
+  ol,ul{margin:6px 0;padding-left:20px}
+  li{margin:5px 0}
+  b{color:#fff}
+  .tag{display:inline-block;font-size:11px;font-weight:700;padding:1px 7px;border-radius:6px;background:#16321f;color:var(--acc);border:1px solid #1f4a30;vertical-align:middle}
+  .tag.w{background:#2a1416;color:var(--warn);border-color:#4a1f22}
+  code,kbd{font-family:var(--mono);font-size:13px;background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+  pre{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:12px;overflow:auto;font-family:var(--mono);font-size:13px;margin:8px 0}
+  .url{color:var(--acc2);font-family:var(--mono);word-break:break-all}
+  .cmd{display:flex;gap:8px;align-items:flex-start;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin:7px 0}
+  .cmd p{margin:0;flex:1;font-family:var(--mono);font-size:13.5px;color:#dbe7f0}
+  .cmd button{flex:0 0 auto;background:#1a2531;color:var(--acc);border:1px solid #284a39;border-radius:7px;padding:4px 9px;font-size:12px;font-weight:700;cursor:pointer}
+  .cmd button:active{transform:scale(.96)}
+  .grp{margin:14px 0 4px;font-size:13px;font-weight:800;color:var(--acc2)}
+  .grp.crit{color:var(--warn)}
+  .pill{font-size:12px;color:var(--mut)}
+  .lead{background:linear-gradient(180deg,#16212c,#101820);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:0 0 6px}
+  .lead b{color:var(--acc)}
+  a{color:var(--acc2)}
+  footer{margin-top:30px;padding-top:14px;border-top:1px solid var(--line);color:var(--mut);font-size:12px}
+  .two{color:var(--acc2);font-weight:700}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>⚽ 풋볼컵 현장 치트 <span class="pill">· 6/24 · 노코드(CloudShell+Harness)</span></h1>
+  <div class="sub">노트북은 그냥 브라우저. 코드 안 짬. 막히면 <code>push.bat</code> → 90초 뒤 <code>pull.bat</code>.</div>
+</header>
+
+<div class="lead">한 줄: <b>워크숍 포털에서 Agent 5개 빌드 → ARN 받아 경기 포털에 붙여넣기 → 연습 → 대전.</b> 우리 키트는 "배포"가 아니라 <b>프롬프트·정책 숫자·영어 지시문</b>의 소스다.</div>
+
+<h2><span class="n">1</span>입장 — 포털 <span class="two">2개</span></h2>
+<div class="card">
+  <ul>
+    <li><b>빌드 포털</b>: <span class="url">catalog.workshops.aws/join</span> + <b>Event access code</b></li>
+    <li><b>경기 포털</b>: <span class="url">agentic-football.aws.dev</span> + <b>Team Code</b> (별도 사이트)</li>
+    <li>리전 <b>us-east-1</b> <span class="tag w">어제와 다름</span> — 모델 액세스도 여기</li>
+  </ul>
+</div>
+
+<h2><span class="n">2</span>빌드 4단계 (CloudShell + Harness, 노코드)</h2>
+<div class="card">
+  <ol>
+    <li>워크숍 내용 훑기 — 규칙·구조. "1단계: 팀 구축 – 샘플 코드 받기"까지</li>
+    <li><b>CloudShell</b> 열기 → "단계1: 저장소 클론" 4줄 명령 → 샘플 코드 클론</li>
+    <li><b>전술도구 배포</b> — "3단계 … AgentCore Gateway"의 <b>"5개 Agent 배포 7(5+2)"</b> 명령 → 람다+게이트웨이 자동 생성</li>
+    <li><b>하네스로 Agent 5개 생성</b> — 프롬프트 붙여넣기 + 모델 선택 + 게이트웨이. 각 Agent의 <b>ARN</b> 확보</li>
+  </ol>
+  <div class="pill">키로 IDE는 메인 아님 — 프롬프트/지시문 다듬는 선택적 보조로만 언급됨.</div>
+</div>
+
+<h2><span class="n">3</span>경기 포털에 연결</h2>
+<div class="card">
+  <ol>
+    <li>agentic-football.aws.dev → Team Code 입력</li>
+    <li>"내 팀" 페이지에 <b>5개 Harness ARN 붙여넣기</b></li>
+    <li><b>연습경기</b>로 Agent 정상 응답 확인 → 다른 팀에 도전</li>
+  </ol>
+</div>
+
+<h2><span class="n">4</span>우리 키트(shfoot) — 브레인으로</h2>
+<div class="card">
+  <ul>
+    <li><b>프롬프트</b>: <code>prompts/{gk,def,mid,fwd}.md</code> → 하네스 Agent에 그대로 붙여넣기 (전원 공 쫓기 금지 = 승부처)</li>
+    <li><b>정책 숫자</b>: <code>policy.py</code> 상단 존 좌표·슛레인지·압박트리거 → 하네스/프롬프트에 반영</li>
+    <li><b>스키마 검증</b> (CloudShell은 리눅스):</li>
+  </ul>
+  <pre>git clone https://github.com/nexusailabs/shfoot &amp;&amp; cd shfoot
+python3 reconcile.py          # 내장 샘플로 GREEN 확인
+python3 reconcile.py obs.json # 샘플 관측으로 키/좌표계 검증</pre>
+</div>
+
+<h2><span class="n">5</span>성적 올리기</h2>
+<div class="card">
+  <ul>
+    <li><b>모델</b>: 포지션별 다르게(사고깊이 vs 응답속도). 가벼운 모델 기본, 무거운 건 여유 있을 때만</li>
+    <li><b>포지션 협응</b>: 단일 Agent 최적화 ✗ → 역할/존 규율로 협응</li>
+    <li><b>CloudWatch</b>: 경기 중 Agent 결정 과정 로그 확인 = 디버깅</li>
+    <li><b>세부 튜닝</b>: 슛 강도·패스 방식·압박 타이밍 한 번에 하나씩</li>
+  </ul>
+</div>
+
+<h2><span class="n">6</span>경기 중 영어 감독 지시 <span class="tag">라이브 레버</span></h2>
+<div class="card">
+  <div class="sub" style="margin-bottom:4px">사이드라인에서 자연어 지시 → <b>영어만, 구체적으로.</b> 증상에 맞는 줄 눌러 복사.</div>
+
+  <div class="grp">기본 (시작 시)</div>
+  <div class="cmd"><p>Defenders, hold your zones. Do NOT chase the ball out of position.</p><button onclick="cp(this)">복사</button></div>
+  <div class="cmd"><p>Only the single nearest player presses the ball. Everyone else keeps formation.</p><button onclick="cp(this)">복사</button></div>
+  <div class="cmd"><p>Forward, stay on the last defender's line. Shoot on sight when in range.</p><button onclick="cp(this)">복사</button></div>
+  <div class="cmd"><p>Goalkeeper, stay on your line unless the ball enters the penalty box.</p><button onclick="cp(this)">복사</button></div>
+  <div class="cmd"><p>Midfielder, prioritize forward passes into open space, not sideways.</p><button onclick="cp(this)">복사</button></div>
+
+  <div class="grp crit">뭉침(ball-chasing) 보일 때 ★</div>
+  <div class="cmd"><p>STOP swarming the ball. Return to your assigned zones immediately.</p><button onclick="cp(this)">복사</button></div>
+  <div class="cmd"><p>Defenders, stop pushing forward. Recover to your defensive line now.</p><button onclick="cp(this)">복사</button></div>
+
+  <div class="grp">지고 있을 때</div>
+  <div class="cmd"><p>We are behind. Push the defensive line up and commit one extra player to attack.</p><button onclick="cp(this)">복사</button></div>
+  <div class="cmd"><p>Midfielder, take more risks: dribble forward and shoot from range.</p><button onclick="cp(this)">복사</button></div>
+
+  <div class="grp">이기고 있을 때</div>
+  <div class="cmd"><p>We are ahead. Drop deeper, keep possession, and run down the clock.</p><button onclick="cp(this)">복사</button></div>
+  <div class="cmd"><p>Avoid risky passes. Clear the ball long when pressured.</p><button onclick="cp(this)">복사</button></div>
+
+  <div class="grp">상황별</div>
+  <div class="cmd"><p>Opponent is attacking down the left. Shift the defensive line to cover that flank.</p><button onclick="cp(this)">복사</button></div>
+  <div class="cmd"><p>Stamina is low. Reduce pressing, hold compact shape, conserve energy.</p><button onclick="cp(this)">복사</button></div>
+  <div class="cmd"><p>Forward, be more decisive. Shoot earlier when you have a clear lane.</p><button onclick="cp(this)">복사</button></div>
+  <div class="cmd"><p>Too many turnovers. Play safer short passes and keep possession first.</p><button onclick="cp(this)">복사</button></div>
+</div>
+
+<h2><span class="n">7</span>첫 30분 체크 + 막혔을 때</h2>
+<div class="card">
+  <ul>
+    <li>obs 정확한 키 이름 + 좌표계 (x 어느 쪽이 상대 골대?) → reconcile로</li>
+    <li>스코어링 세부 (골 외 가점?) / 툴 안 외부 API 허용 여부 (실격룰)</li>
+    <li>막히면 → <code>_chat\q.txt</code>에 에러/화면 저장 → <code>push.bat</code> → ~90초 뒤 <code>pull.bat</code></li>
+  </ul>
+</div>
+
+<footer>
+  한 줄: 노트북=브라우저. 빌드포털→클라우드셸+하네스→ARN→경기포털 붙여넣기. 코드 안 짬. 막히면 push.bat.<br>
+  repo: github.com/nexusailabs/shfoot
+</footer>
+</div>
+
+<script>
+function cp(btn){
+  const t = btn.parentElement.querySelector('p').innerText;
+  navigator.clipboard.writeText(t).then(()=>{
+    const o = btn.innerText; btn.innerText='✓ 복사됨'; btn.style.color='#fff';
+    setTimeout(()=>{btn.innerText=o; btn.style.color='';},1100);
+  }).catch(()=>{btn.innerText='수동복사';});
+}
+</script>
+</body>
+</html>
