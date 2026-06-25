@@ -150,3 +150,52 @@ opponent-specific behavior behind a runtime estimate (like directness), never a 
 - Don't commit secrets: _build/, run_match.py, tick_collector.py, measure_latency.py are gitignored.
 - Codex's proxy gate's `claude -p` fails rc=1 → Codex falls back to direct review/apply (fine);
   always verify Codex output via tests + a real match before committing.
+
+---
+
+## 8. TACTICAL LAYER (2026-06-25 — offline-built + Codex-verified, LIVE-VALIDATION PENDING)
+
+Built this session after a 3-Opus panel + Codex consults concluded: per-tick zero-LLM is correct
+(latency is fixed external transport); the next gains are CODE, like building an expert COM in
+FIFA/PES — strengthen tactics + make the policy un-exploitable. All pure deterministic code, no LLM.
+Verified offline: `test_contract.py` 12/12 + `deploy/coverage_audit.py` (113,400 decisions, swarm
+leaks 0). **Still needs a live match to tune (which formation wins, variance, shot calibration).**
+
+**C — tactics (implemented):**
+- Formation-agnostic role layer: `FORMATIONS` {1-1-2, 2-1-1, 1-2-1}, `role_for_player()`, role
+  groups (`_is_def/_is_mid/_is_fwd`). playerId is separate from tactical slot; **1-1-2 is identity =
+  byte-identical to the validated bot.** `ACTIVE_FORMATION` default "1-1-2"; live A/B picks per
+  opponent (2-1-1 vs aggressive/two-striker, 1-2-1 vs low block). `_ball_rank` single-presser
+  invariant unchanged.
+- Game management `_game_mode(score, gameTime)`: neutral first 60s & at level score; protects a lead
+  (sit deeper, lower risk/press) / chases a deficit (push up, more risk) — ramps 60-90s then >90s.
+- Defensive 2nd-mark + multi-marker coordination: a spare MID drops to mark an uncovered striker;
+  defenders/mids are assigned DISTINCT intruders (no double-mark); the pressed ball-carrier is
+  deprioritized so markers cover off-ball threats first. MARK is positioning, not a press → the
+  anti-swarm single-presser invariant holds.
+
+**A — anti-exploitation (implemented):** `_near_optimal_pick` mixes ONLY among actions within epsilon
+of the best (never trades quality). Applied to GK distribution + buildup pass (mixed by COMPOSITE EV)
++ shot vertical corner (`_mixed_aim`, keeper-away side fixed). Episode-stable seeds (ball cell +
+candidate set) for PASS/GK → no per-tick thrash; per-tick seed only for terminal SHOOT. EV-critical
+paths (high-conf shot, better-look pass, xG chance pass) left deterministic. Mixing is reproducible
+for a fixed state → offline replay stays exact.
+
+**B — coverage (tooling built, ladder edits GATED on live data):** `deploy/coverage_audit.py` fuzzes
+the state space and reports branch histogram + swarm/degenerate reproducers. `deploy/tick_decode.py`
+is a protocol calibrator, NOT a state adapter — turning a real capture into game_state dicts needs a
+hand-confirmed offset→entity schema that does not exist yet. Per Codex: NO threshold changes from
+Benchmark-only data (overfit). `GOAL_HALF_WIDTH=1.0` stays an estimate until a real goal-event capture.
+
+**DEFERRED (Codex-ranked lower / higher-risk — do NOT add without live evidence):**
+- Possession-phase rest-defense lane screen (Codex tactics #4) — overlaps the drop-mark; marginal in
+  1-1-2.
+- Bounded final-third counter-press (#6) — the project deliberately reverted a 2nd presser; high
+  swarm risk.
+- Set pieces beyond center restart (#7) — only worth it if the engine exposes repeatable corners/FKs.
+- `coverage_audit` weak-fallback share is ~43% (hold-shape + GK-hold-line) — expected for a positional
+  policy; the variance fix targets these but needs live data, not Benchmark scorelines.
+
+**NEXT (when account is live):** A/B the 3 formations vs each archetype; characterize variance over
+3-5 matches/variant; capture one real match → set GOAL_HALF_WIDTH + shot thresholds from goal-event
+ball-z; only then extend ladder coverage.

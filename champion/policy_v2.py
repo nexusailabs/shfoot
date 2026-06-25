@@ -31,7 +31,7 @@ tests exercise the exact bytes that deploy.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 # Live pitch geometry. FCPOS_REPLACE values once the full-match bounds arrive:
 #   FIELD_X: max(abs(player.x), abs(ball.x), abs(goal_x))
@@ -72,7 +72,30 @@ def _shoot_dist(cfg: "RoleConfig") -> float:
 
 # Roster: fixed player ids -> role.
 GK, DEF, MID, FWD1, FWD2 = 0, 1, 2, 3, 4
-ROLE_NAME = {GK: "GK", DEF: "DEF", MID: "MID", FWD1: "FWD1", FWD2: "FWD2"}
+DEF2, MID2 = 5, 6              # extra tactical slots used by non-1-1-2 formations
+ROLE_NAME = {GK: "GK", DEF: "DEF", MID: "MID", FWD1: "FWD1", FWD2: "FWD2", DEF2: "DEF2", MID2: "MID2"}
+
+# Role GROUPS — branch on the tactical group, never on a raw player id, so the
+# same policy works under any formation->slot mapping (1-1-2 keeps identity).
+DEFENDERS = (DEF, DEF2)
+MIDS = (MID, MID2)
+FORWARDS = (FWD1, FWD2)
+
+
+def _is_def(slot: int) -> bool:
+    return slot in DEFENDERS
+
+
+def _is_mid(slot: int) -> bool:
+    return slot in MIDS
+
+
+def _is_fwd(slot: int) -> bool:
+    return slot in FORWARDS
+
+
+def _is_attacker(slot: int) -> bool:
+    return slot in (MID, MID2, FWD1, FWD2)
 
 
 # --------------------------------------------------------------------------- #
@@ -114,7 +137,27 @@ ROLE_CONFIG: dict[int, RoleConfig] = {
     MID:  RoleConfig(anchor_ax=0.02,  anchor_ay=0.00, zone_tol=0.44, press_trigger=0.20, shoot_range=0.44, push_when_attacking=0.34, risk=0.38),
     FWD1: RoleConfig(anchor_ax=0.58,  anchor_ay=-0.22, zone_tol=0.47, press_trigger=0.18, shoot_range=0.55, push_when_attacking=0.30, risk=0.55),
     FWD2: RoleConfig(anchor_ax=0.58,  anchor_ay=0.22,  zone_tol=0.47, press_trigger=0.18, shoot_range=0.55, push_when_attacking=0.30, risk=0.55),
+    # Extra slots for non-1-1-2 formations (unused while ACTIVE_FORMATION=="1-1-2").
+    # DEF2: second centre-back, splits to one side of DEF in a 2-1-1 back line.
+    DEF2: RoleConfig(anchor_ax=-0.46, anchor_ay=0.26, zone_tol=0.36, press_trigger=0.16, shoot_range=0.00, push_when_attacking=0.10, risk=0.05),
+    # MID2: second midfielder, splits from MID in a 1-2-1 to control the centre.
+    MID2: RoleConfig(anchor_ax=0.02,  anchor_ay=0.26, zone_tol=0.44, press_trigger=0.20, shoot_range=0.44, push_when_attacking=0.34, risk=0.38),
 }
+
+# Formation -> {player_id: tactical_slot}. player_id 0 is ALWAYS the GK (engine
+# roster). 1-1-2 is identity (the validated default; must stay byte-identical).
+FORMATIONS: dict[str, dict[int, int]] = {
+    "1-1-2": {0: GK, 1: DEF, 2: MID, 3: FWD1, 4: FWD2},
+    "2-1-1": {0: GK, 1: DEF, 2: DEF2, 3: MID, 4: FWD1},
+    "1-2-1": {0: GK, 1: DEF, 2: MID, 3: MID2, 4: FWD1},
+}
+ACTIVE_FORMATION = "1-1-2"   # default; live A/B tunes this per opponent archetype
+
+
+def role_for_player(my_id: int, formation: str | None = None) -> int:
+    """Map a fixed engine player id to its tactical slot under the formation."""
+    fmap = FORMATIONS.get(formation or ACTIVE_FORMATION, FORMATIONS["1-1-2"])
+    return fmap.get(my_id, MID)
 
 LOW_STAMINA = 18.0               # lowered: attacking play needs sprints; only freeze when truly gassed
 SHOOT_MIN_PROB = 0.42           # only shoot if the shot model and geometry agree it is real
@@ -341,6 +384,8 @@ class View:
     opp_goal_x: float
     dir: int                 # +1 if attacking +x, else -1
     stamina: float
+    gt: float = 0.0          # gameTime seconds (for game-management + mixing seeds)
+    goal_diff: int = 0       # our score - their score
 
 
 def _parse(game_state: dict, team_id: int, my_id: int) -> View | None:
@@ -359,12 +404,21 @@ def _parse(game_state: dict, team_id: int, my_id: int) -> View | None:
     # _aid() equality is wrong under duplicate agentId_N (opp's same-numbered player
     # would also match -> ghost on-ball commands). Codex gate #3 blocker.
     i_have = (holder is me)
+    sc = game_state.get("score") or {}
+    home_s = sc.get("home", 0) or 0
+    away_s = sc.get("away", 0) or 0
+    our_s, their_s = (home_s, away_s) if team_id == 0 else (away_s, home_s)
+    try:
+        gt = float(game_state.get("gameTime") or 0.0)
+    except (TypeError, ValueError):
+        gt = 0.0
     return View(
         me=me, me_xy=_field_xy(me), ball_xy=ball_xy, teammates=mine, opponents=opp,
         poss=(_pid(holder) if holder is not None else None),
         i_have_ball=i_have, we_have_ball=we_have,
         team_id=team_id, my_goal_x=my_goal_x, opp_goal_x=opp_goal_x,
         dir=(1 if team_id == 0 else -1), stamina=_norm_stamina(me.get("stamina", 100)),
+        gt=gt, goal_diff=int(our_s) - int(their_s),
     )
 
 
@@ -379,8 +433,8 @@ def _norm_stamina(raw) -> float:
     return v * 100.0 if v <= 1.0 else v
 
 
-def anchor_world(role_id: int, team_id: int, push: float = 0.0) -> tuple[float, float]:
-    cfg = ROLE_CONFIG[role_id]
+def anchor_world(slot: int, team_id: int, push: float = 0.0) -> tuple[float, float]:
+    cfg = ROLE_CONFIG[slot]
     d = 1 if team_id == 0 else -1
     ax = max(-0.98, min(0.98, cfg.anchor_ax + push))
     # Only x is direction-flipped per team (goals are on the x axis). y is NOT
@@ -473,17 +527,19 @@ def _carrier_under_pressure(v: View, press: dict) -> bool:
     return nearest <= _sx(PRESS_TIGHT_DIST) or (press.get("high") and nearest <= _sx(PRESS_NEAR_DIST))
 
 
-def _pressure_release_option(v: View, scored_opts: list[tuple[dict, dict]], directness: float):
+def _pressure_release_option(v: View, scored_opts: list[tuple[dict, dict]], directness: float,
+                             formation: str | None = None):
     """Pick the fastest vertical escape pass when the carrier is being closed."""
     candidates = []
     for o, shot in scored_opts:
         if o["pid"] == GK:
             continue
+        recv_slot = role_for_player(o["pid"], formation)   # formation-aware role, not raw pid
         gain = _forwardness(v, o["x"])
         upfield = _upfield(v, o["x"])
         lane_ok = o["success"] >= PRESS_RELEASE_MIN_SUCCESS and o["risk"] <= 0.66
         if lane_ok and gain > _sx(0.03):
-            role_bonus = 0.18 if o["pid"] in (FWD1, FWD2) else (0.08 if o["pid"] == MID else -0.25)
+            role_bonus = 0.18 if _is_fwd(recv_slot) else (0.08 if _is_mid(recv_slot) else -0.25)
             shot_bonus = shot["prob"] if _shot_is_real_chance(v, o["x"], o["y"], shot) else 0.0
             score = (
                 1.35 * gain / FIELD_X
@@ -508,31 +564,36 @@ def _pressure_release_option(v: View, scored_opts: list[tuple[dict, dict]], dire
     return None
 
 
-def _support_run(v: View, role_id: int, holder: dict | None, directness: float = 0.0):
+def _support_run(v: View, slot: int, my_id: int, holder: dict | None,
+                 carrier_slot: int, directness: float = 0.0):
     """Possession support shape: MID offers the recycle/cutback; the spare FWD
-    attacks the box. GK+DEF are intentionally excluded so counter cover stays."""
-    if holder is None or _pid(holder) == role_id or role_id in (GK, DEF):
+    attacks the box. GK+DEF are intentionally excluded so counter cover stays.
+    Branches on tactical GROUP (slot), not raw id, so it works under any
+    formation; the carrier is identified by MY player id, not slot."""
+    if holder is None or _pid(holder) == my_id or _is_def(slot) or slot == GK:
         return None
     hx, hy = _field_xy(holder)
-    carrier = _pid(holder)
     final_third = (v.opp_goal_x - hx) * v.dir <= _sx(0.42)
     high_press = directness >= 0.48
+    carrier_is_fwd = carrier_slot in FORWARDS
 
-    if role_id == MID:
+    if _is_mid(slot):
+        # MID2 mirrors MID laterally so two midfielders don't stack (1-2-1).
+        m = -1.0 if slot == MID2 else 1.0
         if high_press:
-            if carrier in (FWD1, FWD2):
-                return hx - v.dir * _sx(0.16), hy * 0.25, True, "press layoff outlet"
-            return hx + v.dir * _sx(0.16), hy * 0.20, True, "press central outlet"
-        if carrier in (FWD1, FWD2) and final_third:
-            return hx - v.dir * _sx(0.20), -hy * 0.45, False, "offer cutback outlet"
-        return hx + v.dir * _sx(0.18), hy * 0.35, True, "show central outlet"
+            if carrier_is_fwd:
+                return hx - v.dir * _sx(0.16), hy * 0.25 * m, True, "press layoff outlet"
+            return hx + v.dir * _sx(0.16), hy * 0.20 * m, True, "press central outlet"
+        if carrier_is_fwd and final_third:
+            return hx - v.dir * _sx(0.20), -hy * 0.45 * m, False, "offer cutback outlet"
+        return hx + v.dir * _sx(0.18), hy * 0.35 * m, True, "show central outlet"
 
-    if role_id in (FWD1, FWD2):
-        side = -1 if role_id == FWD1 else 1
+    if _is_fwd(slot):
+        side = -1 if slot == FWD1 else 1
         if high_press and not final_third:
             return hx + v.dir * _sx(0.38), side * _sz(0.30), True, "press in-behind outlet"
         if final_third:
-            far_side = (-1 if hy > 0 else 1) if carrier in (FWD1, FWD2) else side
+            far_side = (-1 if hy > 0 else 1) if carrier_is_fwd else side
             return v.opp_goal_x - v.dir * _sx(0.10), far_side * GOAL_HALF_WIDTH * 0.75, True, "attack box outlet"
         return hx + v.dir * _sx(0.24), side * _sz(0.24), True, "stretch forward outlet"
     return None
@@ -546,11 +607,131 @@ def _center_restart(v: View) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# Game management (score + clock) — scales the role config late in the match.  #
+# Neutral in the first 60s and at level score, so early/0-0 play is unchanged. #
+# --------------------------------------------------------------------------- #
+def _game_mode(v: View) -> dict:
+    t = v.gt or 0.0
+    k = 0.0 if t < 60 else (0.5 if t < 90 else 1.0)   # ramp: mild 60-90s, strong >90s
+    gd = v.goal_diff
+    if k == 0.0 or gd == 0:
+        return {"push_delta": 0.0, "risk": 1.0, "press": 1.0, "shoot": 1.0}
+    if gd > 0:   # leading -> protect: sit deeper, lower risk, lower press radius
+        return {"push_delta": -0.10 * k, "risk": 1.0 - 0.4 * k, "press": 1.0 - 0.25 * k, "shoot": 1.0}
+    # chasing -> commit: push up, more risk/press, wider shot tolerance
+    return {"push_delta": 0.10 * k, "risk": 1.0 + 0.4 * k, "press": 1.0 + 0.2 * k, "shoot": 1.0 + 0.2 * k}
+
+
+# --------------------------------------------------------------------------- #
+# Anti-exploitation: mixed strategy over NEAR-OPTIMAL actions only.            #
+# Never trades quality (only actions within epsilon of the best are candidates)#
+# Seeds are episode-stable (ball cell + candidate set), NOT per-tick, so a     #
+# persisted PASS/GK command does not thrash; SHOOT is terminal so a per-tick   #
+# seed is fine there. Deterministic given the seed -> offline replay is exact. #
+# --------------------------------------------------------------------------- #
+def _seed_int(*parts) -> int:
+    h = 2166136261
+    for p in parts:
+        for ch in str(p):
+            h = ((h ^ ord(ch)) * 16777619) & 0xFFFFFFFF
+    return h
+
+
+def _ball_cell(v: View) -> tuple:
+    return (round(v.ball_xy[0] * 2) / 2, round(v.ball_xy[1] * 2) / 2)
+
+
+def _near_optimal_pick(items, value_of, eps, seed):
+    if not items:
+        return None
+    best = max(value_of(i) for i in items)
+    near = [i for i in items if best - value_of(i) <= eps]
+    if len(near) <= 1:
+        return near[0] if near else items[0]
+    return near[_seed_int(seed) % len(near)]
+
+
+def _mixed_aim(base_aim: str, seed) -> str:
+    """Mix only the vertical corner (T<->B); keep the horizontal side (away from
+    the keeper) fixed -> no quality loss, keeper can't pre-commit vertically."""
+    if len(base_aim) != 2:
+        return base_aim
+    vert, horiz = base_aim[0], base_aim[1]
+    if _seed_int(seed) & 1:
+        vert = "B" if vert == "T" else "T"
+    return vert + horiz
+
+
+def _carrier_pid(v: View):
+    """Player id of the opponent on the ball (being pressed), or None."""
+    c = _on_ball_opp(v)
+    return _pid(c) if c is not None else None
+
+
+def _carrier_will_be_pressed(v: View, team_id: int, formation: str | None) -> bool:
+    """True iff our DESIGNATED presser (the rank-0 outfielder closest to the ball)
+    actually satisfies its press/tackle gate — replicating the DEF-at-feet and
+    single-presser conditions (closest + not tired + in range + non-DEF in-zone).
+    A marker reserves the carrier for the presser ONLY when this is true, so a
+    tired/out-of-zone nearby player does NOT falsely leave a lone carrier open."""
+    if _on_ball_opp(v) is None:
+        return False
+    outs = [p for p in ([v.me] + list(v.teammates)) if _pid(p) != GK]
+    if not outs:
+        return False
+    # rank-0 = closest to the ball with the same (dist, x, y) tiebreak as _ball_rank
+    presser = min(outs, key=lambda p: (_hypot(*_field_xy(p), *v.ball_xy), *_field_xy(p)))
+    if _norm_stamina(presser.get("stamina", 100)) < LOW_STAMINA:
+        return False
+    px, py = _field_xy(presser)
+    ball_d = _hypot(px, py, *v.ball_xy)
+    pslot = role_for_player(_pid(presser), formation)
+    pcfg = ROLE_CONFIG.get(pslot, ROLE_CONFIG[MID])
+    if _is_def(pslot):
+        return ball_d <= _sx(0.11)                       # DEF press-at-feet gate (mode-independent)
+    # non-DEF single-presser range is game-mode scaled in decide() (lead shrinks,
+    # chase widens press_trigger) -> apply the SAME scaling here so the reservation
+    # matches the presser's real range.
+    mode_press = _game_mode(v)["press"]
+    in_zone = _hypot(px, py, *anchor_world(pslot, team_id)) <= _zone_tol(pcfg) * 1.5
+    return ball_d <= _press_dist(pcfg) * mode_press and in_zone   # single-presser gate
+
+
+def _intruders(v: View, deprioritize_pid=None, exclude_pid=None) -> list:
+    """Opponents inside our defensive third, sorted by closeness to our goal.
+    exclude_pid (the actively-pressed ball-carrier) is dropped entirely so the
+    presser owns it alone. deprioritize_pid (an unpressed carrier) is merely moved
+    to the END so markers cover off-ball threats first but still cover it if it is
+    the only intruder -> never left open, never double-teamed."""
+    intr = [o for o in v.opponents
+            if abs(_field_xy(o)[0] - v.my_goal_x) < _sx(0.82) and _pid(o) != exclude_pid]
+    return sorted(intr, key=lambda o: (1 if _pid(o) == deprioritize_pid else 0,
+                                       abs(_field_xy(o)[0] - v.my_goal_x)))
+
+
+def _our_defender_pids(v: View, my_id: int, formation: str | None) -> list:
+    """Stable, sorted list of our defenders' player ids (me + teammate defenders).
+    Used to assign each defender a DISTINCT intruder so multiple defenders in a
+    2-1-1/1-2-1 back line never double-mark the same man (swarm leak)."""
+    pids = [my_id] if _is_def(role_for_player(my_id, formation)) else []
+    pids += [_pid(t) for t in v.teammates if _is_def(role_for_player(_pid(t), formation))]
+    return sorted(set(pids))
+
+
+def _our_mid_pids(v: View, my_id: int, formation: str | None) -> list:
+    """Stable, sorted list of our midfielders' player ids — so two midfielders in a
+    1-2-1 don't both drop-mark the same striker."""
+    pids = [my_id] if _is_mid(role_for_player(my_id, formation)) else []
+    pids += [_pid(t) for t in v.teammates if _is_mid(role_for_player(_pid(t), formation))]
+    return sorted(set(pids))
+
+
+# --------------------------------------------------------------------------- #
 # Core per-tick decision                                                      #
 # --------------------------------------------------------------------------- #
-def decide(game_state: dict, team_id: int, my_id: int) -> Cmd:
-    role_id = my_id
-    cfg = ROLE_CONFIG.get(role_id, ROLE_CONFIG[MID])
+def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = None) -> Cmd:
+    slot = role_for_player(my_id, formation)        # tactical role under the active formation
+    cfg = ROLE_CONFIG.get(slot, ROLE_CONFIG[MID])
     v = _parse(game_state, team_id, my_id)
     if v is None:
         return Cmd("SET_STANCE", {"stance": 0}, 0, "me not found")
@@ -559,17 +740,26 @@ def decide(game_state: dict, team_id: int, my_id: int) -> Cmd:
     gk_opp = _gk_of(v.opponents)  # opponent keeper xy for shot eval
     press = _press_profile(game_state, v)
 
+    # game management: late-match score-aware scaling (neutral first 60s / at 0-0)
+    mode = _game_mode(v)
+    if slot != GK and (mode["risk"] != 1.0 or mode["press"] != 1.0 or mode["shoot"] != 1.0):
+        cfg = replace(cfg, risk=cfg.risk * mode["risk"],
+                      press_trigger=cfg.press_trigger * mode["press"],
+                      shoot_range=cfg.shoot_range * mode["shoot"])
+    mode_push = mode["push_delta"] if slot != GK else 0.0
+
     # ===================== GK =========================================== #
-    if role_id == GK:
+    if slot == GK:
         if v.i_have_ball:
             opts = calculate_pass_options(v.me_xy, v.teammates, v.opponents)
             opts = [o for o in opts if _forwardness(v, o["x"]) > -_sx(0.09)] or opts
             if opts:
-                o = opts[0]
-                return Cmd("GK_DISTRIBUTE", {"target_player_id": o["pid"], "method": "THROW" if o["dist"] < _sx(0.45) else "KICK"}, 0, "GK distribute best")
+                seed = _seed_int("gk", _ball_cell(v), tuple(sorted(o["pid"] for o in opts)))
+                o = _near_optimal_pick(opts, lambda x: x["success"], 0.08, seed)
+                return Cmd("GK_DISTRIBUTE", {"target_player_id": o["pid"], "method": "THROW" if o["dist"] < _sx(0.45) else "KICK"}, 0, "GK distribute")
             return Cmd("GK_DISTRIBUTE", {"target_player_id": DEF, "method": "KICK"}, 0, "GK clear")
         # smother only a real close threat in the box
-        ax, ay = anchor_world(GK, team_id)
+        ax, ay = anchor_world(slot, team_id)
         near_box = abs(v.ball_xy[0] - v.my_goal_x) < _sx(0.20)
         if near_box and _closest_teammate_to_ball_is_me(v) and _hypot(*v.me_xy, *v.ball_xy) < _press_dist(cfg):
             return Cmd("PRESS_BALL", {"intensity": 0.9}, 2, "GK smother")
@@ -580,12 +770,13 @@ def decide(game_state: dict, team_id: int, my_id: int) -> Cmd:
     if v.i_have_ball:
         shot = evaluate_shot(v.me_xy[0], v.me_xy[1], gk_opp, v.opp_goal_x,
                              [_field_xy(o) for o in v.opponents])
-        attacker = role_id in (MID, FWD1, FWD2)
+        attacker = _is_attacker(slot)
         real_chance = _shot_is_real_chance(v, v.me_xy[0], v.me_xy[1], shot)
         directness = press["direct"]
         # 1) HIGH-CONFIDENCE shot -> take it, never pass it off.
         if real_chance and shot["dist"] <= _shoot_dist(cfg) and shot["prob"] >= SHOOT_NOW_PROB:
-            return Cmd("SHOOT", {"aim_location": shot["aim"], "power": shot["power"]}, 0, f"shoot! p={shot['prob']}")
+            aim = _mixed_aim(shot["aim"], _seed_int("shoot", round(v.gt, 2), my_id, _ball_cell(v)))
+            return Cmd("SHOOT", {"aim_location": aim, "power": shot["power"]}, 0, f"shoot! p={shot['prob']}")
         # 2) DECENT shot in range -> shoot unless a teammate has a clearly better look.
         if real_chance and shot["dist"] <= _shoot_dist(cfg) and shot["prob"] >= SHOOT_MIN_PROB:
             opts = calculate_pass_options(v.me_xy, v.teammates, v.opponents)
@@ -603,7 +794,8 @@ def decide(game_state: dict, team_id: int, my_id: int) -> Cmd:
                     break
             if better_pass is not None:
                 return Cmd("PASS", {"target_player_id": better_pass["pid"], "type": better_pass["type"]}, 0, f"pass better look->{better_pass['pid']}")
-            return Cmd("SHOOT", {"aim_location": shot["aim"], "power": shot["power"]}, 0, f"shoot p={shot['prob']}")
+            aim = _mixed_aim(shot["aim"], _seed_int("shoot", round(v.gt, 2), my_id, _ball_cell(v)))
+            return Cmd("SHOOT", {"aim_location": aim, "power": shot["power"]}, 0, f"shoot p={shot['prob']}")
         # 3) FINISHING FIX (match #5: 16 shots, 0 on target = shooting from bad spots).
         #    Attacker near goal but low prob (wide angle / blocked) -> CARRY into a
         #    central high-prob shooting spot instead of recycling the ball backward.
@@ -619,7 +811,7 @@ def decide(game_state: dict, team_id: int, my_id: int) -> Cmd:
         # release forward if a lane exists, clear only as the fallback.
         nearest_opp_d = min((_hypot(*v.me_xy, *_field_xy(o)) for o in v.opponents), default=999)
         def_deep_pressed = (
-            role_id == DEF and abs(v.me_xy[0] - v.my_goal_x) < _sx(0.40)
+            _is_def(slot) and abs(v.me_xy[0] - v.my_goal_x) < _sx(0.40)
             and nearest_opp_d < _press_dist(cfg)
         )
 
@@ -631,7 +823,7 @@ def decide(game_state: dict, team_id: int, my_id: int) -> Cmd:
                                       [_field_xy(opp) for opp in v.opponents])
             scored_opts.append((o, recv_shot))
         if (attacker or def_deep_pressed) and _carrier_under_pressure(v, press):
-            release = _pressure_release_option(v, scored_opts, directness)
+            release = _pressure_release_option(v, scored_opts, directness, formation)
             if release is not None:
                 ptype = release["type"]
                 if _forwardness(v, release["x"]) > _sx(0.18):
@@ -651,7 +843,18 @@ def decide(game_state: dict, team_id: int, my_id: int) -> Cmd:
         fwd_opts = [o for o in opts if _forwardness(v, o["x"]) > _sx(0.11) and o["success"] > 0.58]
         pool = fwd_opts or [o for o in opts if o["success"] > 0.64]
         if pool:
-            o = pool[0]
+            # anti-exploitation: mix near-equal buildup passes by COMPOSITE possession
+            # EV (success + forwardness + receiver shot - risk), not raw success alone.
+            shot_by_pid = {o2["pid"]: s for o2, s in scored_opts}
+
+            def _pass_ev(o):
+                s = shot_by_pid.get(o["pid"])
+                shot_bonus = s["prob"] if (s and _shot_is_real_chance(v, o["x"], o["y"], s)) else 0.0
+                return (0.6 * o["success"] + 0.5 * (_forwardness(v, o["x"]) / FIELD_X)
+                        + 0.4 * shot_bonus - 0.3 * o["risk"])
+
+            seed = _seed_int("pass", _ball_cell(v), tuple(sorted(o["pid"] for o in pool)))
+            o = _near_optimal_pick(pool, _pass_ev, 0.10, seed)
             return Cmd("PASS", {"target_player_id": o["pid"], "type": o["type"]}, 0, f"pass->{o['pid']} s={round(o['success'],2)}")
         # no good pass -> carry toward goal
         return _move(v.me_xy[0] + v.dir * _sx(0.22), v.me_xy[1] * 0.7, True, "dribble toward goal")
@@ -663,66 +866,91 @@ def decide(game_state: dict, team_id: int, my_id: int) -> Cmd:
     #    REVERTED: it broke shape and lost the clean sheet for a degenerate
     #    all-swarm opponent that no real team plays. Don't chase that metric.)
     ball_d = _hypot(*v.me_xy, *v.ball_xy)
-    in_zone = _hypot(*v.me_xy, *anchor_world(role_id, team_id)) <= _zone_tol(cfg) * 1.5
+    in_zone = _hypot(*v.me_xy, *anchor_world(slot, team_id)) <= _zone_tol(cfg) * 1.5
 
     # 0) deterministic center restart: MID attacks the loose center ball while
     #    both strikers open lanes. GK+DEF stay in the normal home shape.
     if _center_restart(v):
-        if role_id == MID:
+        if _is_mid(slot):
             return _move(v.ball_xy[0], v.ball_xy[1], True, "restart claim center")
-        if role_id in (FWD1, FWD2):
-            side = -1 if role_id == FWD1 else 1
+        if _is_fwd(slot):
+            side = -1 if slot == FWD1 else 1
             return _move(v.dir * _sx(0.34), side * _sz(0.18), True, "restart forward lane")
 
     # 1) DEF is a DEFENDER FIRST. Live #1 we played 0 MARK + 188 PRESS and got
     #    countered 4x. So DEF marks the most dangerous attacker by default and
     #    only leaves the mark to win a ball that is right at its feet.
-    if role_id == DEF and not v.we_have_ball:
+    if _is_def(slot) and not v.we_have_ball:
         if ball_d <= _sx(0.11) and _closest_teammate_to_ball_is_me(v) and not tired:
             carrier = _on_ball_opp(v)
             if carrier is not None and cfg.risk >= 0.05:
                 return Cmd("SLIDE_TACKLE", {"target_player_id": _pid(carrier), "sprint": True, "distance": round(_sx(0.07), 2)}, 0, "DEF tackle at feet")
             return Cmd("PRESS_BALL", {"intensity": 0.8}, 2, "DEF press at feet")
-        intruders = [o for o in v.opponents if abs(_field_xy(o)[0] - v.my_goal_x) < _sx(0.82)]
+        _cpid = _carrier_pid(v)
+        _pressed = _carrier_will_be_pressed(v, team_id, formation)
+        intruders = _intruders(v, deprioritize_pid=_cpid, exclude_pid=(_cpid if _pressed else None))
         if intruders:
-            danger = min(intruders, key=lambda o: abs(_field_xy(o)[0] - v.my_goal_x))
-            return Cmd("MARK", {"target_player_id": _pid(danger), "tightness": "TIGHT"}, 3, "DEF mark danger")
+            # multi-defender coordination: defender k marks the k-th most dangerous
+            # intruder, so DEF and DEF2 (2-1-1) never double-mark the same man. A
+            # spare defender (more defenders than intruders) holds shape below.
+            defs = _our_defender_pids(v, my_id, formation)
+            idx = defs.index(my_id) if my_id in defs else 0
+            if idx < len(intruders):
+                return Cmd("MARK", {"target_player_id": _pid(intruders[idx]), "tightness": "TIGHT"}, 3, "DEF mark danger")
         # else hold the deep anchor (the shape recovery below handles it). The earlier
         # "counter-screen" MOVE was REMOVED: it made DEF chase/drop and contributed to
         # the 203-PRESS swarm that got countered 1-3.
 
     # 2) single-presser for the rest: ONLY the closest outfielder, in zone, not
     #    tired. Holds shape, no swarm, no over-commit (DEF excluded -> stays home).
-    if (not v.we_have_ball and role_id != DEF and ball_d <= _press_dist(cfg)
+    if (not v.we_have_ball and not _is_def(slot) and ball_d <= _press_dist(cfg)
             and _closest_teammate_to_ball_is_me(v) and in_zone and not tired):
         carrier = _on_ball_opp(v)
         if carrier is not None and _hypot(*v.me_xy, *_field_xy(carrier)) <= _sx(0.11) and cfg.risk >= 0.3 and not tired:
             return Cmd("SLIDE_TACKLE", {"target_player_id": _pid(carrier), "sprint": True, "distance": round(_sx(0.07), 2)}, 0, "tackle carrier")
         return Cmd("PRESS_BALL", {"intensity": 0.8}, 2, "closest+in-zone press")
 
+    # 2b) Rest-defense: a spare MID drops to mark a 2nd advanced attacker that DEF
+    #     cannot cover (two-striker overload). MARK is positioning, not a press, so
+    #     the single-presser anti-swarm invariant is preserved (no extra presser).
+    if _is_mid(slot) and not v.we_have_ball and not tired:
+        _cpid = _carrier_pid(v)
+        _pressed = _carrier_will_be_pressed(v, team_id, formation)
+        intruders = _intruders(v, deprioritize_pid=_cpid, exclude_pid=(_cpid if _pressed else None))
+        num_def = len(_our_defender_pids(v, my_id, formation))
+        mids = _our_mid_pids(v, my_id, formation)
+        my_mid_idx = mids.index(my_id) if my_id in mids else 0
+        # markers are ordered defenders THEN dropping midfielders; this MID takes the
+        # (num_def + my_mid_idx)-th intruder so two mids (1-2-1) never double-mark.
+        # In 1-1-2 (1 def, 1 mid) this is intruders[1] -> unchanged behavior.
+        target_idx = num_def + my_mid_idx
+        if target_idx < len(intruders):
+            return Cmd("MARK", {"target_player_id": _pid(intruders[target_idx]), "tightness": "NORMAL"}, 3, "MID drop-mark spare striker")
+
     # 3) hold shape: recover to anchor (with attacking push if we possess)
     if v.we_have_ball:
         holder = possession_holder(game_state)
-        support = _support_run(v, role_id, holder, press["direct"])
+        carrier_slot = role_for_player(_pid(holder), formation) if holder is not None else MID
+        support = _support_run(v, slot, my_id, holder, carrier_slot, press["direct"])
         if support is not None:
             tx, ty, sprint, reason = support
             if _hypot(*v.me_xy, tx, ty) > _sx(SUPPORT_MIN_MOVE):
                 return _move(tx, ty, sprint and not tired, reason)
 
-    push = cfg.push_when_attacking if v.we_have_ball else 0.0
+    push = (cfg.push_when_attacking + mode_push) if v.we_have_ball else 0.0
     if v.we_have_ball and press["high"]:
-        if role_id == DEF:
+        if _is_def(slot):
             push = min(push, 0.03)
-        elif role_id == MID:
+        elif _is_mid(slot):
             push = min(push, 0.18)
-    ax, ay = anchor_world(role_id, team_id, push)
+    ax, ay = anchor_world(slot, team_id, push)
     if _hypot(*v.me_xy, ax, ay) > _zone_tol(cfg):
         return _move(ax, ay, v.we_have_ball, "return to zone")
 
     # 4) in position: offer an advanced outlet if we have the ball, else hold
     if v.we_have_ball:
         return _move(ax + v.dir * 0.10 * FIELD_X, ay, False, "offer outlet")
-    return Cmd("SET_STANCE", {"stance": 1 if role_id in (FWD1, FWD2) else 0}, 0, "hold shape")
+    return Cmd("SET_STANCE", {"stance": 1 if _is_fwd(slot) else 0}, 0, "hold shape")
 
 
 def _gk_of(players: list):
@@ -740,8 +968,8 @@ def _on_ball_opp(v: View):
 # --------------------------------------------------------------------------- #
 # Runtime entry: game_state -> the contest command dict                       #
 # --------------------------------------------------------------------------- #
-def command(game_state: dict, team_id: int, my_id: int) -> dict:
-    c = decide(game_state, team_id, my_id)
+def command(game_state: dict, team_id: int, my_id: int, formation: str | None = None) -> dict:
+    c = decide(game_state, team_id, my_id, formation)
     return {"commandType": c.commandType, "playerId": my_id, "teamId": team_id,
             "parameters": c.parameters, "duration": c.duration}
 
