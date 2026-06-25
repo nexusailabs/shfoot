@@ -326,7 +326,7 @@ def _call_sonnet(client, summary: str, position_label: str) -> dict:
         modelId=MODEL_ID,
         system=[{"text": system}],
         messages=[{"role": "user", "content": [{"text": user}]}],
-        inferenceConfig={"temperature": 0.2, "maxTokens": 300},
+        inferenceConfig={"temperature": 0.8, "maxTokens": 300},  # HIGH: escape the bland mean — persona+schema are the guardrails
     )
     parts = resp.get("output", {}).get("message", {}).get("content", [])
     text = "\n".join(p.get("text", "") for p in parts if isinstance(p, dict))

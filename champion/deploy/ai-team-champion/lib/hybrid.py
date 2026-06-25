@@ -1,9 +1,9 @@
-"""Two-timescale opponent adaptation for the champion policy.
+"""Two-timescale attacking adaptation for the champion policy.
 
 The per-tick policy remains deterministic and never calls Bedrock. This module
 only keeps a compact rolling opponent window and lets one daemon thread refresh
-coarse tactics opportunistically. If anything fails, current_tactics() returns
-neutral and policy_v2 behaves exactly as before.
+per-player attack-shaping tactics opportunistically. If anything fails,
+current_tactics() returns neutral and policy_v2 behaves exactly as before.
 """
 
 from __future__ import annotations
@@ -20,7 +20,29 @@ TACTICS_STALE_S = 20.0
 WINDOW_CAP = 120
 MODEL_ID = "us.anthropic.claude-sonnet-4-6"
 REGION = "us-east-1"
-NEUTRAL = {"attack_side": "C", "danger_opp_id": None, "press_level": "med", "notes": ""}
+NEUTRAL = {"attack_zone": None, "push": 0.0, "exploit_opp_id": None, "tempo": "direct", "notes": ""}
+
+ALLOWED_KEYS = {"attack_zone", "push", "exploit_opp_id", "tempo", "notes"}
+FORBIDDEN_KEYS = {
+    "attack_side", "danger_opp_id", "press_level", "danger_mark", "mark",
+    "mark_id", "drop", "drop_deeper", "sit_deeper", "defend", "defense",
+}
+
+BASE_PERSONA = (
+    "You are an ELITE, RELENTLESSLY ATTACKING 5-a-side football manager. "
+    "This is a 2-MINUTE SPRINT: sitting on a lead LOSES because the equalizer always comes. "
+    "You ALWAYS attack. You NEVER advise defending, sitting deeper, parking, or pressing-to-protect. "
+    "Your ONLY job is to make THIS player create and score MORE. "
+    "Be decisive and aggressive."
+)
+
+ROLE_FLAVOR = {
+    "FWD1": "THIS player is a ruthless poacher: gamble on the last shoulder, attack in behind, get shots off fast.",
+    "FWD2": "THIS player is a ruthless poacher: gamble on the last shoulder, attack in behind, get shots off fast.",
+    "MID": "THIS player is a press-resistant creator: drive forward, slip throughballs, arrive late in the box.",
+    "DEF": "THIS player is an aggressive ball-winner who springs the counter INSTANTLY and steps up; never parks.",
+    "GK": "THIS player is a fast-launch goalkeeper: distribute forward immediately to start attacks.",
+}
 
 
 def _policy():
@@ -144,24 +166,48 @@ def observe(game_state, team_id) -> None:
 def _validate_tactics(obj) -> dict:
     if not isinstance(obj, dict):
         return dict(NEUTRAL)
+    if any(k not in ALLOWED_KEYS for k in obj):
+        return dict(NEUTRAL)
+    if any(k in FORBIDDEN_KEYS for k in obj):
+        return dict(NEUTRAL)
     out = dict(NEUTRAL)
-    if obj.get("attack_side") in ("L", "C", "R"):
-        out["attack_side"] = obj.get("attack_side")
-    try:
-        danger = obj.get("danger_opp_id")
-        if danger is None:
-            out["danger_opp_id"] = None
+    if "attack_zone" in obj:
+        if obj.get("attack_zone") is None:
+            out["attack_zone"] = None
+        elif obj.get("attack_zone") in ("L", "C", "R"):
+            out["attack_zone"] = obj.get("attack_zone")
         else:
-            danger = int(danger)
-            if 0 <= danger <= 4:
-                out["danger_opp_id"] = danger
+            return dict(NEUTRAL)
+    if "push" in obj:
+        try:
+            push = float(obj.get("push"))
+        except (TypeError, ValueError):
+            return dict(NEUTRAL)
+        if not math.isfinite(push) or push < 0.0 or push > 1.0:
+            return dict(NEUTRAL)
+        out["push"] = push
+    try:
+        exploit = obj.get("exploit_opp_id")
+        if exploit is None:
+            out["exploit_opp_id"] = None
+        else:
+            exploit = int(exploit)
+            if 0 <= exploit <= 4:
+                out["exploit_opp_id"] = exploit
+            else:
+                return dict(NEUTRAL)
     except Exception:
-        pass
-    if obj.get("press_level") in ("low", "med", "high"):
-        out["press_level"] = obj.get("press_level")
+        return dict(NEUTRAL)
+    if "tempo" in obj:
+        if obj.get("tempo") in ("direct", "patient"):
+            out["tempo"] = obj.get("tempo")
+        else:
+            return dict(NEUTRAL)
     notes = obj.get("notes")
     if isinstance(notes, str):
         out["notes"] = notes[:180]
+    elif notes is not None:
+        return dict(NEUTRAL)
     return out
 
 
@@ -243,6 +289,25 @@ def _extract_json(text: str) -> dict:
         return json.loads(m.group(0))
 
 
+def _role_flavor(position_label: str) -> str:
+    pos = str(position_label or "").upper()
+    return ROLE_FLAVOR.get(pos, ROLE_FLAVOR["MID"])
+
+
+def _system_prompt(position_label: str) -> str:
+    return (
+        f"{BASE_PERSONA}\n"
+        f"{_role_flavor(position_label)}\n"
+        "Output ONLY one JSON object for THIS player. All fields are optional and omitted fields are neutral. "
+        "Allowed schema: {\"attack_zone\":\"L\"|\"C\"|\"R\", \"push\":0.0..1.0, "
+        "\"exploit_opp_id\":0..4|null, \"tempo\":\"direct\"|\"patient\", \"notes\":\"short text\"}. "
+        "attack_zone means the channel THIS player should attack. push only ADDS forward commitment. "
+        "exploit_opp_id means an opponent to attack PAST or behind, never to mark. "
+        "FORBIDDEN: defending, sitting deeper, parking, pressing to protect, marking, press_level, danger_mark, "
+        "danger_opp_id, or any field/action that reduces attack."
+    )
+
+
 def _bedrock_client():
     import boto3
     from botocore.config import Config
@@ -254,21 +319,14 @@ def _bedrock_client():
     )
 
 
-def _call_sonnet(client, summary: str) -> dict:
-    system = (
-        "You are a football tactics analyst. Given this summary of the OPPONENT's "
-        "behavior over the last ~16s, output ONLY a JSON object "
-        "{attack_side,danger_opp_id,press_level} to help our deterministic bot adapt. "
-        "attack_side = which flank THEY attack (so we shore it up); danger_opp_id = "
-        "their most dangerous attacker's player id (0-4) to man-mark; press_level = "
-        "how hard they press us. JSON only."
-    )
+def _call_sonnet(client, summary: str, position_label: str) -> dict:
+    system = _system_prompt(position_label)
     user = "Numeric opponent summary:\n" + summary
     resp = client.converse(
         modelId=MODEL_ID,
         system=[{"text": system}],
         messages=[{"role": "user", "content": [{"text": user}]}],
-        inferenceConfig={"temperature": 0.2, "maxTokens": 300},
+        inferenceConfig={"temperature": 0.8, "maxTokens": 300},  # HIGH: escape the bland mean — persona+schema are the guardrails
     )
     parts = resp.get("output", {}).get("message", {}).get("content", [])
     text = "\n".join(p.get("text", "") for p in parts if isinstance(p, dict))
@@ -285,7 +343,7 @@ def _slow_worker(team_id: int, position_label: str) -> None:
                 continue
             if client is None:
                 client = _bedrock_client()
-            tactics = _call_sonnet(client, summary)
+            tactics = _call_sonnet(client, summary, position_label)
             P = _policy()
             window = list(_mem().get("window") or [])
             game_t = window[-1].get("t") if window else None
