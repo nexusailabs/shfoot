@@ -296,8 +296,19 @@ def _slow_worker(team_id: int, position_label: str) -> None:
                 "wall_time": time.time(),
                 "source": "bedrock-converse",
             }
-        except Exception:
+            # firing-verification log (CloudWatch): proves the Sonnet slow loop ran.
+            print("FCSLOW " + json.dumps({"pos": position_label, "gameTime": game_t,
+                  "samples": len(window), "tactics": tactics}), flush=True)
+        except Exception as _e:
+            # FAIL-SAFE (Codex gate): on ANY call/parse failure, drop to NEUTRAL
+            # immediately — never let stale non-neutral tactics linger. Neutral ==
+            # the attack-always deterministic bot (the proven 4/4 spine).
             client = None
+            try:
+                _policy()._STATE.pop("tactics", None)
+            except Exception:
+                pass
+            print("FCSLOW_ERR " + str(_e)[:200], flush=True)
             continue
 
 
