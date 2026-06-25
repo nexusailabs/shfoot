@@ -196,6 +196,26 @@ Benchmark-only data (overfit). `GOAL_HALF_WIDTH=1.0` stays an estimate until a r
 - `coverage_audit` weak-fallback share is ~43% (hold-shape + GK-hold-line) — expected for a positional
   policy; the variance fix targets these but needs live data, not Benchmark scorelines.
 
-**NEXT (when account is live):** A/B the 3 formations vs each archetype; characterize variance over
-3-5 matches/variant; capture one real match → set GOAL_HALF_WIDTH + shot thresholds from goal-event
-ball-z; only then extend ladder coverage.
+**LIVE RESULTS (2026-06-25, this session's deploy of the tactical layer, formation 1-1-2):**
+- balanced 2-0, 3-0, 2-1 (W); defensive 4-0, 4-1, 6-1 (W, up to 13-1 shots) — strong, no regression.
+- aggressive: 2-3 L, 3-4 L, then 5-4 W, 0-0 D, 1-2 L, 2-1 W = **2W-1D-3L, high variance**.
+  KEY FINDING: aggressive is a HIGH-VARIANCE SHOOTOUT for EVERY version. The baseline (6ef53aa) does
+  NOT reliably win it either — re-measured live it got 0-0 (outshot 4-12, lucky) + 6-3. The memory's
+  "aggressive fixed 5-2/4-1, 2/2" was small-sample optimism. The initial "0/2 aggressive regression"
+  alarm was variance, NOT a real regression (confirmed by a 4-match resample: 2W-1D-1L).
+- drop-mark EXONERATED via A/B: turning it OFF made aggressive WORSE (0-3, 1-5; opp shots 10/8 vs
+  7/7 ON). Kept ON (DROP_MARK_ENABLED=True) — it reduces conceded shots.
+- LATENCY: in-match ~800-870ms is PLATFORM-BOUND (Codex audit + experiment). It is the contest
+  game-server→runtime invoke path (a different mode than our CLI ~350ms direct invoke), NOT cold start
+  (FCINST: warm, 0.17ms handler), NOT reducible by us. Removing the per-tick diagnostic prints did NOT
+  change it (835/867/818 before vs after). Portal grades <1000ms "excellent". STOP spending latency
+  effort. Diagnostic FCINST/FCDBG/FCPOS prints removed (coords calibrated; hot path clean).
+- aggressive lever (label-free, runtime-detected — NOT keyed on the practice archetype): it is a
+  shootout you win by OUTSCORING, so against a high-shot-volume opponent the edge is finishing/chance
+  creation, not sitting deeper. Open: does game-management's lead/neutral "sit deeper" hurt the
+  shootout? (untested; add a runtime flag + A/B if pursued — never gate on the opponent label.)
+
+**NEXT (when account is live):** A/B the 3 formations vs each archetype (need ACTIVE_FORMATION +
+portal PUT /teams synced); characterize variance over 5+ matches/variant (2 is noise); capture one
+real match → set GOAL_HALF_WIDTH + shot thresholds from goal-event ball-z; only then extend ladder
+coverage. Real test = tournament vs adapting experts, not Benchmark.

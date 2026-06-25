@@ -48,39 +48,10 @@ async def invoke(payload, context):
     except Exception:
         cmd = {"commandType": "SET_STANCE", "playerId": pid, "teamId": team_id,
                "parameters": {"stance": 0}, "duration": 0}
-    _h_ms = round((time.time() - _t0) * 1000, 2)
-    print("FCINST " + json.dumps({"pos": POSITION_LABEL, "n": _STATE["n"],
-          "proc_age_s": round(time.time() - _PROC_START, 1), "handler_ms": _h_ms}),
-          flush=True)
-    # DIAGNOSTIC: dump the LIVE obs format on the first ticks + every SHOOT, so we can
-    # see whether the live game_state matches our parser and catch ghost-shoot (SHOOT
-    # issued when we do NOT actually hold the ball). 21 SHOOT cmds -> 1 real shot = suspect.
-    try:
-        _ct = cmd.get("commandType") if isinstance(cmd, dict) else None
-        if _STATE["n"] <= 3 or _ct == "SHOOT":
-            _pls = game_state.get("players", [])
-            _holder = P.possession_holder(game_state)
-            print("FCDBG " + json.dumps({"pos": POSITION_LABEL, "n": _STATE["n"],
-                  "cmd": _ct, "ball": game_state.get("ball", {}), "np": len(_pls),
-                  "p0": _pls[0] if _pls else None,
-                  "holder_pid": (P._pid(_holder) if _holder is not None else None),
-                  "team_id": team_id, "my_pid": pid}, default=str)[:1600], flush=True)
-    except Exception as _e:
-        print("FCDBG_ERR " + str(_e), flush=True)
-    # FCPOS: compact per-tick position log to MAP the real field bounds + goal positions.
-    # ball.position is 3D {x,y=height,z}; players are 2D {x,y}. One match -> min/max extent.
-    try:
-        _b = game_state.get("ball", {}).get("position") or {}
-        _mep = None
-        for _p in game_state.get("players", []):
-            if P._is_mine(_p, team_id) and P._pid(_p) == pid:
-                _mep = _p.get("position"); break
-        _ct2 = cmd.get("commandType") if isinstance(cmd, dict) else None
-        print("FCPOS " + json.dumps({"pid": pid, "n": _STATE["n"], "cmd": _ct2,
-              "bx": _b.get("x"), "by": _b.get("y"), "bz": _b.get("z"),
-              "mx": (_mep or {}).get("x"), "my": (_mep or {}).get("y")}), flush=True)
-    except Exception:
-        pass
+    # Diagnostic FCINST/FCDBG/FCPOS per-tick prints REMOVED 2026-06-25: coordinates are
+    # calibrated so they are no longer needed, and Codex's latency audit flagged the per-tick
+    # stdout as the only (tiny, 0-50ms) reducible term — the ~900ms in-match latency is
+    # platform-bound (contest game-server invoke path), not our code. Keep the hot path clean.
     # SSE streaming yield is MANDATORY (a non-streaming return failed fitness 0/5).
     yield json.dumps([cmd])
 

@@ -152,6 +152,8 @@ FORMATIONS: dict[str, dict[int, int]] = {
     "1-2-1": {0: GK, 1: DEF, 2: MID, 3: MID2, 4: FWD1},
 }
 ACTIVE_FORMATION = "1-1-2"   # default; live A/B tunes this per opponent archetype
+DROP_MARK_ENABLED = True     # A/B (2026-06-25): drop-mark EXONERATED — OFF made aggressive WORSE
+                             # (0-3,1-5 vs 2-3,3-4; opp shots 10/8 vs 7/7). Keep ON; it helps defence.
 
 
 def role_for_player(my_id: int, formation: str | None = None) -> int:
@@ -913,7 +915,7 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
     # 2b) Rest-defense: a spare MID drops to mark a 2nd advanced attacker that DEF
     #     cannot cover (two-striker overload). MARK is positioning, not a press, so
     #     the single-presser anti-swarm invariant is preserved (no extra presser).
-    if _is_mid(slot) and not v.we_have_ball and not tired:
+    if DROP_MARK_ENABLED and _is_mid(slot) and not v.we_have_ball and not tired:
         _cpid = _carrier_pid(v)
         _pressed = _carrier_will_be_pressed(v, team_id, formation)
         intruders = _intruders(v, deprioritize_pid=_cpid, exclude_pid=(_cpid if _pressed else None))
