@@ -259,21 +259,61 @@ def test_neutral_tactics_byte_identical():
         (_state((-4.0, 0.5), poss_aid="agentId_3", poss_team="away",
                 away_pos={0: (6.4, 0), 1: (3.0, 0), 2: (0.0, 0.6),
                           3: (-4.0, 0.5), 4: (-3.6, -0.8)}), 0, 2, None),
+        (_state((-3.0, 0.0), poss_aid="agentId_1", poss_team="home",
+                home_pos={0: (-6.4, 0), 1: (-3.0, 0), 2: (-3.0, 1.2),
+                          3: (5.0, -0.8), 4: (5.0, 0.8)}), 0, 2, None),
+        (_state((-1.0, 0.0), poss_aid="agentId_2", poss_team="home",
+                home_pos={0: (-6.4, 0), 1: (-3.0, 0), 2: (-1.0, 0.0),
+                          3: (0.0, -0.8), 4: (0.0, 0.8)}), 0, 3, None),
     ]
     for gs, team, pid, formation in states:
         _clear_runtime_state()
         baseline = P.command(gs, team, pid, formation)
         _clear_runtime_state()
-        _set_tactics({"attack_side": "C", "danger_opp_id": None, "press_level": "med", "notes": ""})
+        _set_tactics({"attack_zone": None, "push": 0.0, "exploit_opp_id": None, "tempo": "direct", "notes": ""})
         adapted = P.command(gs, team, pid, formation)
         assert adapted == baseline, (baseline, adapted)
     _clear_runtime_state()
     print("OK neutral tactics are byte-identical to no tactics")
 
 
-def test_danger_tactics_preserve_coordination():
+def _target_forwardness(cmd, team_id):
+    if cmd["commandType"] != "MOVE_TO":
+        return None
+    d = 1 if team_id == 0 else -1
+    return cmd["parameters"]["target_x"] * d
+
+
+def test_attack_tactics_never_reduce_forwardness():
+    shaped = {"attack_zone": "R", "push": 1.0, "exploit_opp_id": 1, "tempo": "patient", "notes": "attack behind"}
+    states = [
+        (_state((-3.0, 0.0), poss_aid="agentId_1", poss_team="home",
+                home_pos={0: (-6.4, 0), 1: (-3.0, 0), 2: (-3.0, 1.2),
+                          3: (5.0, -0.8), 4: (5.0, 0.8)}), 0, 2, None),
+        (_state((-1.0, 0.0), poss_aid="agentId_2", poss_team="home",
+                home_pos={0: (-6.4, 0), 1: (-3.0, 0), 2: (-1.0, 0.0),
+                          3: (0.0, -0.8), 4: (0.0, 0.8)}), 0, 3, None),
+        (_state((0.0, 1.2), poss_aid="agentId_2", poss_team="home",
+                home_pos={0: (-6.4, 0), 1: (-3.0, 0), 2: (0.0, 1.2),
+                          3: (-1.0, -1.0), 4: (-1.0, 1.0)}), 0, 2, None),
+    ]
+    for gs, team, pid, formation in states:
+        _clear_runtime_state()
+        baseline = P.command(gs, team, pid, formation)
+        _clear_runtime_state()
+        _set_tactics(shaped)
+        adapted = P.command(gs, team, pid, formation)
+        b_fwd = _target_forwardness(baseline, team)
+        a_fwd = _target_forwardness(adapted, team)
+        assert b_fwd is not None and a_fwd is not None, (baseline, adapted)
+        assert a_fwd >= b_fwd, (baseline, adapted)
     _clear_runtime_state()
-    _set_tactics({"attack_side": "C", "danger_opp_id": 4, "press_level": "med"})
+    print("OK attack tactics never reduce MOVE_TO forwardness")
+
+
+def test_attack_tactics_preserve_coordination():
+    _clear_runtime_state()
+    _set_tactics({"attack_zone": "R", "push": 1.0, "exploit_opp_id": 4, "tempo": "patient"})
     gs = _state((-5.0, 0.5), poss_team="away", poss_aid="agentId_3",
                 away_pos={0: (6.4, 0), 1: (3.0, 0), 2: (0.0, 0.0),
                           3: (-5.0, 0.5), 4: (-4.6, -0.6)})
@@ -283,17 +323,26 @@ def test_danger_tactics_preserve_coordination():
     targets = [c["parameters"]["target_player_id"] for c in marks]
     assert len(pressers) <= 1, cmds
     assert len(set(targets)) == len(targets), cmds
-    assert 4 in targets, cmds
     _clear_runtime_state()
-    print(f"OK danger tactics preserve coordination (pressers={len(pressers)}, mark targets={targets})")
+    print(f"OK attack tactics preserve coordination (pressers={len(pressers)}, mark targets={targets})")
 
 
 def test_current_tactics_neutral_and_off_schema():
     _clear_runtime_state()
     assert hybrid.current_tactics() == hybrid.NEUTRAL
-    _set_tactics({"attack_side": "wide", "danger_opp_id": 9, "press_level": "panic"})
+    _set_tactics({"attack_zone": "L", "push": 0.7, "exploit_opp_id": "2", "tempo": "patient", "notes": "go"})
+    assert hybrid.current_tactics() == {"attack_zone": "L", "push": 0.7, "exploit_opp_id": 2, "tempo": "patient", "notes": "go"}
+    _set_tactics({"attack_side": "C", "danger_opp_id": 2, "press_level": "high"})
     assert hybrid.current_tactics() == hybrid.NEUTRAL
-    _set_tactics({"attack_side": "L", "danger_opp_id": 2, "press_level": "high"}, age=25.0)
+    _set_tactics({"attack_zone": "wide", "push": 0.5})
+    assert hybrid.current_tactics() == hybrid.NEUTRAL
+    _set_tactics({"attack_zone": "R", "push": 1.2})
+    assert hybrid.current_tactics() == hybrid.NEUTRAL
+    _set_tactics({"attack_zone": "R", "push": 0.5, "sit_deeper": True})
+    assert hybrid.current_tactics() == hybrid.NEUTRAL
+    _set_tactics("garbage")
+    assert hybrid.current_tactics() == hybrid.NEUTRAL
+    _set_tactics({"attack_zone": "L", "push": 0.2, "exploit_opp_id": 2, "tempo": "patient"}, age=25.0)
     assert hybrid.current_tactics() == hybrid.NEUTRAL
     _clear_runtime_state()
     print("OK current_tactics neutralizes none/off-schema/stale")
@@ -329,7 +378,8 @@ if __name__ == "__main__":
     test_carrier_reservation_respects_game_mode_lead()
     test_carrier_reservation_respects_game_mode_chase()
     test_neutral_tactics_byte_identical()
-    test_danger_tactics_preserve_coordination()
+    test_attack_tactics_never_reduce_forwardness()
+    test_attack_tactics_preserve_coordination()
     test_current_tactics_neutral_and_off_schema()
     test_observe_never_raises_on_malformed_state()
     print("\nALL CONTRACT TESTS PASSED")

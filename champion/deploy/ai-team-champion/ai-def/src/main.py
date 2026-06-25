@@ -7,8 +7,12 @@ command for our player.
 import os, sys, json, time, asyncio
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 
-from bedrock_agentcore.runtime import BedrockAgentCoreApp
 import policy_v2 as P
+try:
+    import hybrid as H
+except Exception:
+    H = None
+from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 app = BedrockAgentCoreApp()
 
@@ -30,6 +34,16 @@ _PROC_START = time.time()
 _STATE = {"n": 0}
 
 
+def _ensure_slow_loop(team_id):
+    if H is None or _STATE.get("slow_started"):
+        return
+    _STATE["slow_started"] = True
+    try:
+        H.start_slow_loop(team_id, POSITION_LABEL)
+    except Exception:
+        pass
+
+
 @app.entrypoint
 async def invoke(payload, context):
     _t0 = time.time()
@@ -41,8 +55,14 @@ async def invoke(payload, context):
         data = {}
     game_state = data.get("gameState", {}) or {}
     team_id = int(data.get("teamId", 0) or 0)
+    _ensure_slow_loop(team_id)
     my_players = data.get("myPlayers") or [MY_PLAYER_ID]
     pid = my_players[0] if my_players else MY_PLAYER_ID
+    try:
+        if H is not None:
+            H.observe(game_state, team_id)
+    except Exception:
+        pass
     try:
         cmd = P.command(game_state, team_id, pid)
     except Exception:
