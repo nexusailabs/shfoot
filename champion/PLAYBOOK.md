@@ -12,6 +12,74 @@ gitignored `champion/deploy/run_match.py`. This file is public-safe (github.com/
 
 ---
 
+## 0. START HERE — DEFINITIVE STATE & NEXT-SESSION MAP (2026-06-25 marathon, read FIRST)
+
+The 2026-06-25 session settled the core questions with LIVE A/B data. Read §0 fully before touching
+anything; §1-§9 are detail/history. ⚠️ §3's ledger shows "4/4 aggressive" — that was later proven to be
+VARIANCE (§9). On aggressive, trust §9 over §3.
+
+### A. WHAT SHIPS (live: account <workshop-account-in-/tmp/awsenv>; branch feat/champion-tactical-layer; commit a742108; pushed)
+Pure DETERMINISTIC DEFAULT **1-1-2 attack-always** (champion/policy_v2.py):
+- 1-1-2 (GK0/DEF1/MID2/FWD1·2). Attack-always game mode (never sit on a lead in a 2-min match).
+- SHOOT gates SHOOT_MIN_PROB=0.42 / SHOT_REAL_CHANCE_DIST=0.43 (proven — do NOT loosen, see §0.C).
+- anti-swarm single-presser · anti-exploitation mixing · multi-marker coordination · carrier reservation.
+- ALL experimental levers shipped OFF behind one-line flags: COUNTER_MODE_ENABLED, SELECTOR counters
+  (enabled=False), HYBRID_ENABLED, FCTICK_ENABLED.
+
+### B. DEFINITIVE FINDINGS (proven — do NOT re-litigate)
+1. DETERMINISTIC > LLM here: we beat the LLM-only build 4/4 vs 0/4 on aggressive. Per-tick LLM is
+   spatially imprecise + slow + regresses to a bland/defensive MEAN that loses the shootout.
+2. attack-always is correct (2-min sprint: protecting a lead invites the equalizer).
+3. precision + variance don't coexist: an LLM perturbing a near-optimal policy is downhill. LLM value
+   needs HEADROOM (an ADAPTING opponent) that fixed Benchmark doesn't provide.
+4. latency ~900ms is PLATFORM-BOUND (contest game-server transport), parity, graded "excellent" = NON-issue.
+5. We DOMINATE balanced/defensive (4-0/6-0). AGGRESSIVE = the MODAL opponent (everyone attacks in 2 min)
+   = a ~50% HIGH-VARIANCE SHOOTOUT whose ceiling is the GAME, not our policy (§9).
+
+### C. DO NOT RE-CHASE (over-engineering traps, exhaustively disproven on aggressive — §9)
+2-1-1/extra defender → WORSE · LLM adaptation (Nova or Sonnet nudges) → WORSE/no benefit · shoot-more
+(loosen gates) → NO DIFF (gate wasn't the bottleneck; reverted) · fast-transition counter → NO DIFF
+(2W-2L vs 2W-2L). Aggressive is variance; adding tactical levers to "dominate" it = over-engineering.
+
+### D. THE ONE OPEN LEVER (only thing not taken to completion)
+HARD shot-model calibration from real data. Pipeline built+validated (calibrate_shots.py consumes FCTICK);
+measured 30% conversion vs aggressive on 643 ticks (too few). TODO: 10+ aggressive matches with FCTICK on
+→ fit real GOAL_HALF_WIDTH + SHOOT gates → maybe lift finishing. Proportional, proven-only.
+
+### E. ASSET INVENTORY (flag-gated; how to re-enable)
+- SELECTOR (champion/selector.py): pure-from-gameState, team-coherent (all 5 agents agree). PLAYBOOKS
+  DEFAULT + TWO_STRIKER_COVER(2-1-1) + HIGH_PRESS_BEATER. Enable a counter ONLY after live A/B proves it
+  > DEFAULT on its archetype (Playbook.enabled=True).
+- Sonnet HYBRID (champion/hybrid.py): off-path LLM (HYBRID_ENABLED=True). Only worth it vs a genuinely
+  ADAPTING expert (untestable on Benchmark). Use STRONG persona + HIGH temp + attack-only schema
+  (neutral/low-temp prompt regresses to bland defensive mush — proven).
+- FCTICK collector (build_deploy FCTICK_ENABLED=True, GK-only full-state) + calibrate_shots.py +
+  diagnose_counter.py. WSS binary decode intractable/unneeded — FCTICK supersedes it (DECODE_STATUS.md).
+- COUNTER mode (policy_v2 COUNTER_MODE_ENABLED): in-behind runs + direct ball on a deep turnover.
+
+### F. RUNBOOK (reproduce everything)
+- CREDS (expire ~hourly): desktop-control — Workshop Studio Sign in → Email OTP to the operator's event email → read
+  OTP from that Gmail → rejoin the event access code (kept LOCAL — in /tmp/awsenv notes or ask operator; NOT in this public file) → "Get AWS CLI credentials" → copy →
+  `pbpaste > /tmp/awsenv` → verify sts. (Or operator pastes the export block.)
+- DEPLOY: `set -a; . /tmp/awsenv; set +a; export PATH=$PWD/_build/tk-venv/bin:$PATH; python3 champion/build_deploy.py; bash champion/deploy/local-deploy.sh` (~4min, stable ARNs, no portal re-paste).
+- MATCH: `python3 champion/deploy/run_match.py aggressive|balanced|defensive` (~4.5min). ONE match/team at a
+  time (2nd create errors "already in progress" → retry with backoff).
+- A/B a lever: patch its flag (policy_v2/build_deploy), rebuild, deploy arm, run N, compare. FORCE_PLAYBOOK
+  (build_deploy) forces a playbook every tick to isolate it (bypasses the classifier).
+- CALIBRATE: FCTICK_ENABLED=True → deploy → 10+ matches → pull GK FCTICK from CloudWatch (filter "FCTICK")
+  → jsonl→array → `python3 champion/deploy/calibrate_shots.py --ticks <file>`.
+
+### G. POINTERS
+- Commits on feat/champion-tactical-layer (pushed to github.com/nexusailabs/shfoot): a742108 (final ship)
+  ← 53ea936 (selector) ← 6060769 (pure-det) ← 4cf435d/d763c63/9e59e34 (hybrid).
+- Raw A/B + tick evidence (LOCAL ONLY, _build/ gitignored): AB-*.md, SAMPLE-*.md, CAB-*.md, ticks_*.jsonl,
+  CODEX-*-RESULT.md.
+- kaia saves 333 + 334 (full record). Lesson memory: feedback_regress_to_mean_use_proxy.
+- Every correct turn came from the operator's calls (attack-always, no-label-gating, raise-temp, /proxy)
+  + LIVE A/B overruling guesses. The /proxy verdict was: SHIP PURE DETERMINISTIC.
+
+---
+
 ## 1. VERIFIED GROUND TRUTH (the contract — re-confirm before trusting)
 
 The match runs on a **Unity** engine (game server `wss://game.agentic-football.aws.dev:5245`),
