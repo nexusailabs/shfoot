@@ -23,6 +23,9 @@ POSITION_LABEL = "FWD1"
 # Even when ON, ONLY the GK process (pid 0) logs the full-pitch FCTICK; each agent
 # logs only its own FCSHOOT. Keeps the hot path clean.
 FCTICK_ENABLED = False
+# A/B override: set to a playbook NAME to FORCE it every tick (isolates a playbook's
+# effect, bypassing the classifier). None -> normal selector. Shipped config: None.
+FORCE_PLAYBOOK = None
 # Burst-stagger (hypothesis F) was REMOVED: live match #5 proved it made latency WORSE
 # (946ms with stagger vs 861ms without), and GK with 0 stagger was still 705ms. So the
 # ~700ms is a fixed overhead ADDED to handler time, not a fast-close/burst penalty. The
@@ -137,12 +140,13 @@ async def invoke(payload, context):
     # OPPONENT-REACTIVE PLAYBOOK SELECT: a PURE function of the SHARED gameState, so
     # all 5 (separate-process) agents independently compute the IDENTICAL playbook.
     # No Bedrock, no per-process memory. Counters ship DISABLED -> always "DEFAULT".
-    pb = "DEFAULT"
-    try:
-        if S is not None:
-            pb = S.select_playbook(game_state, team_id) or "DEFAULT"
-    except Exception:
-        pb = "DEFAULT"
+    pb = FORCE_PLAYBOOK or "DEFAULT"
+    if not FORCE_PLAYBOOK:
+        try:
+            if S is not None:
+                pb = S.select_playbook(game_state, team_id) or "DEFAULT"
+        except Exception:
+            pb = "DEFAULT"
     try:
         cmd = P.command(game_state, team_id, pid, None, pb)   # wire the playbook through
     except Exception:

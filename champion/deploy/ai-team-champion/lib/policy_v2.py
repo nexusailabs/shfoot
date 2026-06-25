@@ -246,6 +246,35 @@ PRESS_NEAR_DIST = 0.22          # real-scale nearest-presser distance to the car
 PRESS_TIGHT_DIST = 0.12         # tight enough that the carrier must release now
 PRESS_RELEASE_MIN_SUCCESS = 0.44
 
+# --------------------------------------------------------------------------- #
+# FAST-TRANSITION / COUNTER-ATTACK mode (the last attacking lever, 2026-06-25). #
+# Grounded in real FCTICK data (deploy/diagnose_counter.py), NOT sim2 guesses:  #
+#   * When we hold the ball deep with >=2 opponents committed into our half      #
+#     there is SPACE IN BEHIND them (~33-35 such opportunities per match).       #
+#   * The DEFAULT already advances the ball forward on these (~79% break), so    #
+#     "slow recycle" is only weakly the problem. The REAL failure is RETENTION:  #
+#     the forward ball lands in CONTESTED space because our forwards are NOT in   #
+#     behind the opp last line (only 3-17% of the time) -> the ball reaches the  #
+#     final third but home-possession in the attacking third is just ~2-3% of    #
+#     ticks. We create from loose balls, not controlled attacks.                 #
+# The counter fixes the missing piece: the moment it triggers, the two FWDs make #
+# IMMEDIATE in-behind sprint runs into the vacated space and the carrier plays   #
+# the DIRECT through-ball to a runner (or sprint-carries the open channel) rather #
+# than a patient buildup pass. Triggered PURELY from the shared gameState        #
+# (team-coherent across the 5 separate-process agents, NO per-process memory).   #
+# BOUNDED + fail-safe: no trigger -> byte-identical to DEFAULT; the kill switch  #
+# COUNTER_MODE_ENABLED=False makes behavior == pre-counter DEFAULT everywhere.   #
+# It is an ATTACK accelerant only: GK+DEF off-ball shape is unchanged, and the   #
+# single-presser / no-double-mark / carrier-reservation invariants are untouched.#
+# --------------------------------------------------------------------------- #
+COUNTER_MODE_ENABLED = False
+COUNTER_MIN_OPP_FORWARD = 2        # >=2 opponents in OUR half = committed forward (FCTICK-validated)
+COUNTER_THROUGH_MIN_SUCCESS = 0.50 # fire the direct through-ball only through a genuinely open lane
+COUNTER_THROUGH_MIN_GAIN = 0.10    # receiver must be meaningfully ahead of the carrier (frac FIELD_X)
+COUNTER_FWD_RUN_AX = 0.62          # in-behind run depth: attacking-frame fraction toward the opp goal
+COUNTER_FWD_RUN_AY = 0.32          # channel split width (frac FIELD_Z); FWD1 left, FWD2 right
+COUNTER_CARRY_STEP = 0.30          # sprint-carry step (frac FIELD_X) when no in-behind runner exists yet
+
 
 _STATE = {
     "press": {},                 # team_id -> {"t": gameTime, "ema": high-press score}
@@ -767,6 +796,81 @@ def _support_run(v: View, slot: int, my_id: int, holder: dict | None,
     return None
 
 
+# --------------------------------------------------------------------------- #
+# FAST-TRANSITION / COUNTER-ATTACK — pure functions of the shared gameState.    #
+# --------------------------------------------------------------------------- #
+def _counter_opportunity(v: View) -> bool:
+    """Counter trigger, computed PURELY from the shared gameState so all 5
+    separate-process agents detect it identically (team-coherent, no memory).
+
+    True iff: we possess + the ball is in OUR half + >= COUNTER_MIN_OPP_FORWARD
+    opponents are committed into our half (i.e. space in behind them to attack
+    directly). _upfield(...) < 0 means "in our defensive half" for either team.
+    """
+    if not COUNTER_MODE_ENABLED or not v.we_have_ball:
+        return False
+    if _upfield(v, v.ball_xy[0]) >= 0.0:          # ball already in opp half -> not a deep counter
+        return False
+    committed = sum(1 for o in v.opponents if _upfield(v, _field_xy(o)[0]) < 0.0)
+    return committed >= COUNTER_MIN_OPP_FORWARD
+
+
+def _counter_carry_y(v: View) -> float:
+    """Least-congested channel (L/C/R) ahead of the ball to sprint-carry into when
+    no in-behind runner is available yet."""
+    bx = v.ball_xy[0]
+    ahead = [_field_xy(o) for o in v.opponents if _upfield(v, _field_xy(o)[0]) > _upfield(v, bx)]
+    best_y, best_clear = 0.0, -1.0
+    for frac in (-0.30, 0.0, 0.30):
+        cy = frac * FIELD_Z
+        clear = min((abs(oy - cy) for _ox, oy in ahead), default=FIELD_Z)
+        if clear > best_clear:
+            best_clear, best_y = clear, cy
+    return best_y
+
+
+def _counter_carrier_cmd(v: View, scored_opts: list, formation: str | None, t: dict):
+    """Carrier on a counter: the FASTEST forward ball, never a backward recycle.
+    A DIRECT through-ball to the most advanced open teammate in the space behind,
+    else a sprint-carry up the most open channel toward the opp goal."""
+    cands = []
+    for o, _s in scored_opts:
+        if o["pid"] == GK:
+            continue
+        if _forwardness(v, o["x"]) <= _sx(COUNTER_THROUGH_MIN_GAIN) or o["success"] < COUNTER_THROUGH_MIN_SUCCESS:
+            continue
+        recv_slot = role_for_player(o["pid"], formation)
+        role_bonus = 0.6 if _is_fwd(recv_slot) else (0.2 if _is_mid(recv_slot) else -1.0)
+        score = _upfield(v, o["x"]) / FIELD_X + 0.5 * o["success"] + role_bonus - 0.3 * o["risk"]
+        cands.append((score, o))
+    if cands:
+        o = max(cands, key=lambda c: c[0])[1]
+        return Cmd("PASS", {"target_player_id": o["pid"], "type": "THROUGH"}, 0,
+                   f"COUNTER through->{o['pid']} s={round(o['success'], 2)}")
+    # no runner has arrived yet -> sprint-carry directly upfield into the open channel
+    tx = v.me_xy[0] + v.dir * _sx(COUNTER_CARRY_STEP)
+    ty = _counter_carry_y(v)
+    tx, ty = _apply_attack_tactics(v, tx, ty, t)
+    return _move(tx, ty, True, "COUNTER sprint-carry")
+
+
+def _counter_support_run(v: View, slot: int):
+    """Off-ball on a counter: the two FWDs make IMMEDIATE in-behind sprint runs into
+    the vacated space (staggered channels); MID supports the break centrally. GK+DEF
+    are excluded so counter cover stays intact (attack accelerant, not a defensive
+    change). Returns (tx, ty, sprint, reason) or None."""
+    if _is_fwd(slot):
+        side = -1 if slot == FWD1 else 1
+        tx = v.dir * _sx(COUNTER_FWD_RUN_AX)               # high, behind the committed line
+        ty = side * COUNTER_FWD_RUN_AY * FIELD_Z           # split channels (FWD1 left, FWD2 right)
+        return tx, ty, True, "COUNTER in-behind run"
+    if _is_mid(slot):
+        tx = v.ball_xy[0] + v.dir * _sx(0.45)              # support the break centrally
+        ty = v.ball_xy[1] * 0.30
+        return tx, ty, True, "COUNTER support break"
+    return None
+
+
 def _center_restart(v: View) -> bool:
     """Kickoff/after-goal shape trigger when the ball is dead-center and loose."""
     return (not v.we_have_ball
@@ -1026,6 +1130,13 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
         if def_deep_pressed:
             return _move(v.opp_goal_x * 0.2, v.me_xy[1] + (_sz(0.23) if v.me_xy[1] <= 0 else -_sz(0.23)), True, "DEF clear under pressure")
 
+        # COUNTER: we won the ball deep with opponents committed forward -> spring a
+        # DIRECT forward ball into the space behind instead of a patient buildup.
+        if _counter_opportunity(v):
+            cc = _counter_carrier_cmd(v, scored_opts, formation, t)
+            if cc is not None:
+                return cc
+
         chance_opts = [
             (o, s) for o, s in scored_opts
             if o["success"] > 0.62 and _shot_is_real_chance(v, o["x"], o["y"], s) and s["prob"] >= SHOOT_MIN_PROB
@@ -1128,6 +1239,14 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
     if v.we_have_ball:
         holder = possession_holder(game_state)
         carrier_slot = role_for_player(_pid(holder), formation) if holder is not None else MID
+        # COUNTER: FWDs sprint in behind the committed line, MID supports the break.
+        if _counter_opportunity(v):
+            cs = _counter_support_run(v, slot)
+            if cs is not None:
+                tx, ty, sprint, reason = cs
+                tx, ty = _apply_attack_tactics(v, tx, ty, t)
+                if _hypot(*v.me_xy, tx, ty) > _sx(SUPPORT_MIN_MOVE):
+                    return _move(tx, ty, sprint and not tired, reason)
         support = _support_run(v, slot, my_id, holder, carrier_slot, directness)
         if support is not None:
             tx, ty, sprint, reason = support

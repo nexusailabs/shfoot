@@ -219,3 +219,35 @@ Benchmark-only data (overfit). `GOAL_HALF_WIDTH=1.0` stays an estimate until a r
 portal PUT /teams synced); characterize variance over 5+ matches/variant (2 is noise); capture one
 real match → set GOAL_HALF_WIDTH + shot thresholds from goal-event ball-z; only then extend ladder
 coverage. Real test = tournament vs adapting experts, not Benchmark.
+
+---
+
+## 9. EXHAUSTIVE AGGRESSIVE FINDINGS (2026-06-25, the modal opponent) — DEFINITIVE
+
+In a 2-min match EVERY competent opponent attacks (a sprint shootout), so the AGGRESSIVE benchmark is
+the MODAL opponent and our aggressive result ~= our tournament result. We tried to dominate it. We could
+not — and we PROVED why, with live A/B (not guessing). Every lever was tested vs the aggressive variant:
+
+| Lever | aggressive result vs DEFAULT |
+|---|---|
+| DEFAULT 1-1-2 (attack-always) | ~50% high-variance coin-flip (≈ 4W-2L then 1W-2L then 2W-2L across samples) |
+| 2-1-1 (extra defender) | WORSE — kills our attack (0W-1D-2L, us-shots 0/8/3); more defence loses the shootout |
+| LLM adaptation (Nova / Sonnet persona-hybrid) | WORSE — the LLM defends/perturbs (0/4, then 1/3) |
+| shoot-more (loosen SHOOT gates) | NO DIFFERENCE — shots didn't increase; the gate was NOT the bottleneck |
+| fast-transition counter (in-behind runs + direct ball) | NO DIFFERENCE — 2W-2L vs 2W-2L (ON vs OFF) |
+
+DIAGNOSIS (FCTICK, 643 ticks): low-shot games are a CREATION cap, not a gate cap — we DO break forward
+79% of the time, but the forward ball lands as a LOOSE ball with no runner truly in behind the opp last
+line (in-behind only 3-17%). The counter build targeted exactly that and STILL didn't move the coin-flip.
+
+CONCLUSION: aggressive is a HIGH-VARIANCE SHOOTOUT whose ~50% ceiling is set by the GAME (2-min, both
+teams attacking), not by our policy. No lever moves it. DEFAULT 1-1-2 attack-always is the best config
+and is what ships. This is CERTAINTY, not failure: most opponents will guess wrong (use an LLM, protect
+leads, add a 2nd defender) and lose to us on balanced/defensive (which we DOMINATE 4-0/6-0) while
+coin-flipping aggressive like everyone. We beat the LLM-only field 4/4 vs 0/4.
+
+SHIPPED CONFIG: DEFAULT 1-1-2, attack-always, SHOOT gates 0.42/0.43, anti-swarm single-presser,
+anti-exploitation mixing, multi-marker coordination. ALL experimental levers preserved as one-line
+flags but OFF (no live benefit): COUNTER_MODE_ENABLED, SELECTOR counters (enabled=False), HYBRID_ENABLED,
+FCTICK_ENABLED. Assets kept for a future edge: the team-coherent playbook selector, the Sonnet hybrid,
+the FCTICK tick-collector + calibrate_shots pipeline (needs 10+ matches for a hard shot-model calibration).

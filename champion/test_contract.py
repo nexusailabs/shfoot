@@ -604,6 +604,153 @@ def test_selector_pure_no_bedrock_no_llm():
     print("OK selector is pure deterministic (no Bedrock, no LLM, no stateful select)")
 
 
+# ============================ FAST-TRANSITION / COUNTER ====================== #
+# The counter is an ATTACK accelerant triggered PURELY from the shared gameState
+# (team-coherent). Contract: no-counter-state => byte-identical to pre-counter
+# DEFAULT (proven via the COUNTER_MODE_ENABLED kill switch); a counter-state =>
+# the carrier plays a forward/through ball (not a backward recycle) and the FWDs
+# sprint high in behind. Invariants hold; malformed state is safe.
+
+def _counter_state(gt=40.0):
+    # We (home) hold the ball DEEP (MID carrier at x=-3) and TWO opponents are
+    # committed into our half (x<0) -> space in behind. A FWD sits high (x=2) as a
+    # potential in-behind runner. Ball in our half -> the counter must trigger.
+    return _state((-3.0, 0.0), poss_aid="agentId_2", poss_team="home",
+                  home_pos={0: (-6.4, 0), 1: (-3.5, 0.2), 2: (-3.0, 0.0), 3: (2.0, -0.8), 4: (1.5, 0.8)},
+                  away_pos={0: (6.4, 0), 1: (-2.0, 0.3), 2: (-1.5, -0.4), 3: (4.0, 0.0), 4: (4.5, 0.5)},
+                  ) | {"gameTime": gt}
+
+
+def _no_counter_state(gt=40.0):
+    # Same possession/ball but opponents are HOME in their own half (x>0) -> NOT
+    # committed forward -> the trigger must stay off (DEFAULT behavior).
+    return _state((-3.0, 0.0), poss_aid="agentId_2", poss_team="home",
+                  home_pos={0: (-6.4, 0), 1: (-3.5, 0.2), 2: (-3.0, 0.0), 3: (2.0, -0.8), 4: (1.5, 0.8)},
+                  away_pos={0: (6.4, 0), 1: (3.0, 0.3), 2: (2.5, -0.4), 3: (4.0, 0.0), 4: (4.5, 0.5)},
+                  ) | {"gameTime": gt}
+
+
+def _toggle_counter(on):
+    P.COUNTER_MODE_ENABLED = on
+
+
+def test_counter_trigger_detection():
+    # The counter is a flag-gated lever (ships OFF: live A/B showed no benefit). Test the
+    # trigger DETECTION logic by enabling it locally, then restore the shipped OFF default.
+    _clear_runtime_state()
+    _toggle_counter(True)
+    try:
+        v_yes = P._parse(_counter_state(), 0, 2)
+        v_no = P._parse(_no_counter_state(), 0, 2)
+        assert P._counter_opportunity(v_yes) is True, "deep possession + 2 opps forward must trigger"
+        assert P._counter_opportunity(v_no) is False, "opponents home in their half must NOT trigger"
+    finally:
+        _toggle_counter(False)
+    # ball in opp half -> never a deep counter even with opps back
+    v_oppside = P._parse(_state((3.0, 0.0), poss_aid="agentId_2", poss_team="home",
+                                away_pos={0: (6.4, 0), 1: (-2.0, 0), 2: (-1.5, 0), 3: (4.0, 0), 4: (4.5, 0)}), 0, 2)
+    assert P._counter_opportunity(v_oppside) is False, "ball in opp half must not trigger a deep counter"
+    print("OK counter trigger: fires deep w/ opps forward, off otherwise")
+
+
+def test_counter_no_state_byte_identical_to_default():
+    # The hard regression: for a NON-counter state, enabling the feature changes
+    # NOTHING (the trigger is false -> exact same code path as pre-counter DEFAULT).
+    gs = _no_counter_state()
+    for pid in range(5):
+        _clear_runtime_state(); _toggle_counter(False)
+        off = P.command(gs, 0, pid)
+        _clear_runtime_state(); _toggle_counter(True)
+        on = P.command(gs, 0, pid)
+        assert off == on, (pid, off, on)
+    _toggle_counter(True); _clear_runtime_state()
+    # And every GOLDEN state is unaffected by the feature toggle too.
+    for gs, team, pid, formation in _GOLDEN:
+        _clear_runtime_state(); _toggle_counter(False)
+        off = P.command(gs, team, pid, formation)
+        _clear_runtime_state(); _toggle_counter(True)
+        on = P.command(gs, team, pid, formation)
+        assert off == on, ("golden", pid, off, on)
+    _toggle_counter(True); _clear_runtime_state()
+    print("OK no-counter / golden states are byte-identical with counter on vs off")
+
+
+def test_counter_carrier_plays_forward_not_recycle():
+    _clear_runtime_state(); _toggle_counter(True)
+    gs = _counter_state()
+    c = P.command(gs, 0, 2)  # MID carrier deep
+    assert c["commandType"] in ("PASS", "MOVE_TO"), c
+    if c["commandType"] == "PASS":
+        # through-ball to a forward teammate, not a sideways/back recycle
+        assert c["parameters"]["type"] == "THROUGH", c
+        tgt = c["parameters"]["target_player_id"]
+        assert tgt in (3, 4), f"counter through-ball should target a forward runner, got {tgt}"
+    else:
+        # sprint-carry must advance toward the opp goal (forwardness > 0), sprinting
+        assert c["parameters"]["sprint"] is True, c
+        assert c["parameters"]["target_x"] > -3.0, f"carry must go forward (+x), got {c}"
+    # the counter command must NEVER be a backward recycle: also assert it differs
+    # from the (slower) pre-counter behavior for this state.
+    _clear_runtime_state(); _toggle_counter(False)
+    base = P.command(gs, 0, 2)
+    _toggle_counter(True); _clear_runtime_state()
+    assert c != base, "counter must change the carrier's action vs pre-counter DEFAULT"
+    print(f"OK counter carrier plays forward ({c['commandType']}/{c['parameters'].get('type','')}) not recycle")
+
+
+def test_counter_forwards_sprint_high():
+    _clear_runtime_state(); _toggle_counter(True)
+    gs = _counter_state()
+    for pid in (3, 4):  # FWD1, FWD2
+        c = P.command(gs, 0, pid)
+        assert c["commandType"] == "MOVE_TO", (pid, c)
+        assert c["parameters"]["sprint"] is True, (pid, "FWD must sprint on counter", c)
+        # high in behind: well into the opp half toward the opp goal
+        assert c["parameters"]["target_x"] >= P._sx(P.COUNTER_FWD_RUN_AX) - 0.2, (pid, c)
+    # FWDs split channels (don't stack): opposite-sign target_y
+    c3 = P.command(gs, 0, 3); c4 = P.command(gs, 0, 4)
+    assert c3["parameters"]["target_y"] * c4["parameters"]["target_y"] < 0, (c3, c4)
+    _clear_runtime_state()
+    print("OK counter FWDs sprint high in behind on opposite channels")
+
+
+def test_counter_preserves_invariants():
+    # Single-presser + no-double-mark must still hold while the counter is active.
+    _clear_runtime_state(); _toggle_counter(True)
+    gs = _counter_state()
+    pressers, targets = _pressers_and_marks(gs, None)
+    assert pressers <= 1, ("counter broke single-presser", pressers)
+    assert len(set(targets)) == len(targets), ("counter caused double-mark", targets)
+    # GK + DEF off-ball shape unchanged: enabling the counter must not alter their
+    # command on this state (attack accelerant only, not a defensive change).
+    for pid in (0, 1):
+        _clear_runtime_state(); _toggle_counter(False)
+        off = P.command(gs, 0, pid)
+        _clear_runtime_state(); _toggle_counter(True)
+        on = P.command(gs, 0, pid)
+        assert off == on, ("counter changed GK/DEF", pid, off, on)
+    _clear_runtime_state()
+    print("OK counter preserves single-presser/no-double-mark, GK+DEF unchanged")
+
+
+def test_counter_team_coherent_and_safe():
+    # PURE: every agent computes the same trigger from the shared state; no _STATE
+    # mutation; malformed state never raises.
+    _clear_runtime_state(); _toggle_counter(True)
+    gs = _counter_state()
+    v = P._parse(gs, 0, 2)
+    snap = dict(P._STATE)
+    picks = [P._counter_opportunity(P._parse(gs, 0, pid)) for pid in range(5)]
+    assert all(picks), f"all agents must agree the counter is on: {picks}"
+    assert P._STATE == snap, "counter detection must not mutate _STATE"
+    for junk in ({"players": [], "ball": {"position": {"x": 0, "z": 0}}},):
+        vj = P._parse(junk, 0, 2)
+        if vj is not None:
+            P._counter_opportunity(vj)  # must not raise
+    _clear_runtime_state()
+    print("OK counter is team-coherent, stateless, and malformed-safe")
+
+
 if __name__ == "__main__":
     test_duplicate_agentid_possession_team()
     test_duplicate_agentid_nearest_ball()
@@ -640,4 +787,11 @@ if __name__ == "__main__":
     test_two_striker_cover_211_single_presser()
     test_high_press_beater_keeps_shoot_and_possession()
     test_selector_pure_no_bedrock_no_llm()
+    # --- fast-transition / counter-attack (team-coherent, bounded, fail-safe) ---
+    test_counter_trigger_detection()
+    test_counter_no_state_byte_identical_to_default()
+    test_counter_carrier_plays_forward_not_recycle()
+    test_counter_forwards_sprint_high()
+    test_counter_preserves_invariants()
+    test_counter_team_coherent_and_safe()
     print("\nALL CONTRACT TESTS PASSED")
