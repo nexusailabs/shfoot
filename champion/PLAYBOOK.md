@@ -18,6 +18,17 @@ The 2026-06-25 session settled the core questions with LIVE A/B data. Read §0 f
 anything; §1-§9 are detail/history. ⚠️ §3's ledger shows "4/4 aggressive" — that was later proven to be
 VARIANCE (§9). On aggressive, trust §9 over §3.
 
+> ⚠️⚠️ **CORRECTION (2026-06-25, 3-Opus panel + Codex-gated) — §9's "no lever moves it / 50% is the GAME's
+> ceiling, PROVEN" is DOWNGRADED from certainty to UNCERTAINTY.** Two verified errors: (1) every "lever
+> doesn't work" A/B was n≈3-4/arm on W/L scoreline = ~8% power to detect even a +20%p edge (95% CI on our
+> own aggressive win-rate = [10%, 82%] — can't tell domination from parity); (2) the **sustained-possession**
+> in-behind creation lever was NEVER tested — the failed counter was gated to deep turnovers (`_counter_opportunity`
+> ball-in-our-half, policy_v2.py:812) and shipped disabled, while the real cap (`_support_run` final-third FWD
+> outlet sits at x≈5.76, 0.64u SHORT of the last line at ~6.4) is untested. DEFAULT 1-1-2 still SHIPS (safe robust
+> default that dominates balanced/defensive), but NOT because aggressive levers were disproven. **Authoritative
+> next-step doc = `champion/IMPROVEMENT-PLAN.md`** (powered xG-based A/B protocol + flag-gated creation levers A/B/C/D).
+> Trust IMPROVEMENT-PLAN over §9 on the ceiling claim.
+
 ### A. WHAT SHIPS (live: account <workshop-account-in-/tmp/awsenv>; branch feat/champion-tactical-layer; commit a742108; pushed)
 Pure DETERMINISTIC DEFAULT **1-1-2 attack-always** (champion/policy_v2.py):
 - 1-1-2 (GK0/DEF1/MID2/FWD1·2). Attack-always game mode (never sit on a lead in a 2-min match).
@@ -36,15 +47,24 @@ Pure DETERMINISTIC DEFAULT **1-1-2 attack-always** (champion/policy_v2.py):
 5. We DOMINATE balanced/defensive (4-0/6-0). AGGRESSIVE = the MODAL opponent (everyone attacks in 2 min)
    = a ~50% HIGH-VARIANCE SHOOTOUT whose ceiling is the GAME, not our policy (§9).
 
-### C. DO NOT RE-CHASE (over-engineering traps, exhaustively disproven on aggressive — §9)
-2-1-1/extra defender → WORSE · LLM adaptation (Nova or Sonnet nudges) → WORSE/no benefit · shoot-more
-(loosen gates) → NO DIFF (gate wasn't the bottleneck; reverted) · fast-transition counter → NO DIFF
-(2W-2L vs 2W-2L). Aggressive is variance; adding tactical levers to "dominate" it = over-engineering.
+### C. DO NOT RE-CHASE (mechanistically-credible rejections — but see CORRECTION: these were UNDERPOWERED)
+2-1-1/extra defender → WORSE (us-shots 3.7/m, conv 27% — directionally credible kill) · LLM adaptation
+(Nova/Sonnet) → WORSE/no benefit · shoot-more (loosen gates) → NO DIFF (us-shots flat, conv FELL 59%→38%;
+gate wasn't the bottleneck; reverted). These rejections rest on a MECHANISTIC metric (shot-rate), so they stand.
+⚠️ BUT the **fast-transition counter "NO DIFF (2W-2L vs 2W-2L)"** does NOT close the creation question: that
+counter fired only on DEEP TURNOVERS (disabled at ship), NOT the sustained-possession final-third in-behind run
+that is the actual diagnosed cap. Creation during sustained possession is OPEN, not disproven (→ IMPROVEMENT-PLAN, levers A+B).
 
-### D. THE ONE OPEN LEVER (only thing not taken to completion)
-HARD shot-model calibration from real data. Pipeline built+validated (calibrate_shots.py consumes FCTICK);
-measured 30% conversion vs aggressive on 643 ticks (too few). TODO: 10+ aggressive matches with FCTICK on
-→ fit real GOAL_HALF_WIDTH + SHOOT gates → maybe lift finishing. Proportional, proven-only.
+### D. THE OPEN LEVERS (not taken to completion — see champion/IMPROVEMENT-PLAN.md for the full plan)
+1. **Sustained-possession in-behind CREATION** (the dominant leak; never tested). FWD final-third outlet sits
+   0.64u short of the last line + no through-ball EV term rewards a runner past the deepest defender. Levers
+   A (push outlet beyond live last-line x) + B (in-behind through-ball EV) attack exactly this. Flag-gated, A/B-gated.
+2. **HARD shot-model calibration** from real data. Pipeline built+validated (calibrate_shots.py consumes FCTICK);
+   measured 30% conversion vs aggressive on 643 ticks (too few). TODO: 10+ aggressive matches with FCTICK on
+   → fit real GOAL_HALF_WIDTH + SHOOT gates → maybe lift finishing. Proportional, proven-only.
+3. **The MEASUREMENT itself**: every prior A/B was n≈4/arm on W/L (~8% power). Re-open with a powered protocol
+   FIRST (≥12 matches/arm, primary metric = opp-shots-conceded + us-shots/conversion, pre-registered one-sided
+   rule, W/L confirmatory only). Powered baseline on the SHIPPED config comes before touching policy_v2.py.
 
 ### E. ASSET INVENTORY (flag-gated; how to re-enable)
 - SELECTOR (champion/selector.py): pure-from-gameState, team-coherent (all 5 agents agree). PLAYBOOKS
@@ -290,7 +310,18 @@ coverage. Real test = tournament vs adapting experts, not Benchmark.
 
 ---
 
-## 9. EXHAUSTIVE AGGRESSIVE FINDINGS (2026-06-25, the modal opponent) — DEFINITIVE
+## 9. EXHAUSTIVE AGGRESSIVE FINDINGS (2026-06-25, the modal opponent) — ⚠️ CONCLUSION CORRECTED
+
+> ⚠️ **CORRECTED 2026-06-25 (3-Opus panel + Codex-gated; see §0 banner + champion/IMPROVEMENT-PLAN.md).**
+> This section's headline — "no lever moves it / ~50% ceiling is set by the GAME, PROVEN / CERTAINTY not
+> failure" — is **OVERSTATED and downgraded to UNCERTAINTY.** Why: (1) every "lever doesn't work" row below
+> was decided on n≈3-4 matches/arm using W/L scoreline, which has ~8% power to detect even a +20%p edge — so
+> "no lever moves it" is statistically indistinguishable from "we had no power to see a lever move it." (2) The
+> "fast-transition counter → NO DIFF" row did NOT test the real creation cap: that counter fired on deep
+> TURNOVERS (disabled at ship), not the sustained-possession final-third in-behind run, which is untested.
+> The mechanistic rejections (2-1-1, LLM, shoot-more — judged on shot-RATE) still stand. DEFAULT 1-1-2 ships as
+> the safe robust default, not as proof the ceiling is closed. Re-open with a POWERED A/B (≥12/arm, opp-shots +
+> conversion metrics) before trusting any conclusion here.
 
 In a 2-min match EVERY competent opponent attacks (a sprint shootout), so the AGGRESSIVE benchmark is
 the MODAL opponent and our aggressive result ~= our tournament result. We tried to dominate it. We could
