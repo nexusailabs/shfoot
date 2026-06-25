@@ -3,8 +3,9 @@
 Generate the deployable AgentCore team `champion/deploy/ai-team-champion/` from
 the single source `champion/policy_v2.py`. Mirrors the sample's deploy layout so
 the sample toolchain (`agentcore deploy`) works unchanged, but:
-  * zero-LLM: each agent's src/main.py just calls policy_v2.command() — no
-    strands, no Bedrock model round-trip (faster cold start, <500ms trivially).
+  * zero-LLM fast path: each agent's src/main.py calls policy_v2.command() —
+    no per-tick model round-trip (faster cold start, <500ms trivially). A
+    separate daemon slow loop may refresh coarse tactics.
   * yields a JSON LIST of commands (the runtime contract).
   * team-local lib/ (self-contained; does not touch the sample's shared lib).
 
@@ -29,8 +30,12 @@ command for our player.
 import os, sys, json, time, asyncio
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 
-from bedrock_agentcore.runtime import BedrockAgentCoreApp
 import policy_v2 as P
+try:
+    import hybrid as H
+except Exception:
+    H = None
+from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 app = BedrockAgentCoreApp()
 
@@ -52,6 +57,16 @@ _PROC_START = time.time()
 _STATE = {{"n": 0}}
 
 
+def _ensure_slow_loop(team_id):
+    if H is None or _STATE.get("slow_started"):
+        return
+    _STATE["slow_started"] = True
+    try:
+        H.start_slow_loop(team_id, POSITION_LABEL)
+    except Exception:
+        pass
+
+
 @app.entrypoint
 async def invoke(payload, context):
     _t0 = time.time()
@@ -63,8 +78,14 @@ async def invoke(payload, context):
         data = {{}}
     game_state = data.get("gameState", {{}}) or {{}}
     team_id = int(data.get("teamId", 0) or 0)
+    _ensure_slow_loop(team_id)
     my_players = data.get("myPlayers") or [MY_PLAYER_ID]
     pid = my_players[0] if my_players else MY_PLAYER_ID
+    try:
+        if H is not None:
+            H.observe(game_state, team_id)
+    except Exception:
+        pass
     try:
         cmd = P.command(game_state, team_id, pid)
     except Exception:
@@ -83,13 +104,14 @@ if __name__ == "__main__":
 '''
 
 REQS = """\
-# Championship agent — zero-LLM, deterministic policy. No strands (no model round-trip).
+# Championship agent — deterministic fast path. No strands and no per-tick model round-trip.
 # OTEL/observability RESTORED: the morning LLM build ran ~450ms WITH aws-opentelemetry-distro
 # + observability:true on the SAME invoke path; our no-OTEL build was 705ms. Removing OTEL
 # (thought to cause a 559ms cold-start in live #1) was likely the latency regression, not the
 # cure. This restores the morning build's exact observability infra to isolate the ~700ms gap.
 bedrock-agentcore>=1.0.3
 aws-opentelemetry-distro>=0.10.0
+boto3>=1.34.0
 """
 
 YAML_TMPL = '''\
@@ -181,6 +203,7 @@ def main():
         shutil.rmtree(OUT)
     os.makedirs(os.path.join(OUT, "lib"))
     shutil.copy(os.path.join(HERE, "policy_v2.py"), os.path.join(OUT, "lib", "policy_v2.py"))
+    shutil.copy(os.path.join(HERE, "hybrid.py"), os.path.join(OUT, "lib", "hybrid.py"))
     for folder, pid, label in AGENTS:
         role = label.lower()
         d = os.path.join(OUT, folder)

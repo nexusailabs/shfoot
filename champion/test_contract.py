@@ -2,7 +2,9 @@
 Run: python3 champion/test_contract.py
 """
 import os, sys
+import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import hybrid
 import policy_v2 as P
 
 
@@ -20,6 +22,20 @@ def _state(ball_xy, poss_aid=None, poss_team=None, home_pos=None, away_pos=None,
     if poss_team:
         ball["possessionTeam"] = poss_team
     return {"ball": ball, "score": {"home": 0, "away": 0}, "players": players}
+
+
+def _clear_runtime_state():
+    P._STATE["press"] = {}
+    P._STATE.pop("tactics", None)
+
+
+def _set_tactics(value, age=0.0):
+    P._STATE["tactics"] = {
+        "value": value,
+        "wall_mono": time.monotonic() - age,
+        "wall_time": time.time() - age,
+        "gameTime": 0.0,
+    }
 
 
 def test_duplicate_agentid_possession_team():
@@ -236,6 +252,65 @@ def test_carrier_reservation_respects_game_mode_chase():
     print(f"OK no double-team under late chase (committed {on_carrier})")
 
 
+def test_neutral_tactics_byte_identical():
+    states = [
+        (_state((5.0, -0.8), poss_aid="agentId_3", poss_team="home"), 0, 3, None),
+        (_state((0.5, 0.2)), 0, 2, "1-2-1"),
+        (_state((-4.0, 0.5), poss_aid="agentId_3", poss_team="away",
+                away_pos={0: (6.4, 0), 1: (3.0, 0), 2: (0.0, 0.6),
+                          3: (-4.0, 0.5), 4: (-3.6, -0.8)}), 0, 2, None),
+    ]
+    for gs, team, pid, formation in states:
+        _clear_runtime_state()
+        baseline = P.command(gs, team, pid, formation)
+        _clear_runtime_state()
+        _set_tactics({"attack_side": "C", "danger_opp_id": None, "press_level": "med", "notes": ""})
+        adapted = P.command(gs, team, pid, formation)
+        assert adapted == baseline, (baseline, adapted)
+    _clear_runtime_state()
+    print("OK neutral tactics are byte-identical to no tactics")
+
+
+def test_danger_tactics_preserve_coordination():
+    _clear_runtime_state()
+    _set_tactics({"attack_side": "C", "danger_opp_id": 4, "press_level": "med"})
+    gs = _state((-5.0, 0.5), poss_team="away", poss_aid="agentId_3",
+                away_pos={0: (6.4, 0), 1: (3.0, 0), 2: (0.0, 0.0),
+                          3: (-5.0, 0.5), 4: (-4.6, -0.6)})
+    cmds = [P.command(gs, 0, pid, "2-1-1") for pid in range(5)]
+    pressers = [c for c in cmds if c["commandType"] in ("PRESS_BALL", "SLIDE_TACKLE")]
+    marks = [c for c in cmds if c["commandType"] == "MARK"]
+    targets = [c["parameters"]["target_player_id"] for c in marks]
+    assert len(pressers) <= 1, cmds
+    assert len(set(targets)) == len(targets), cmds
+    assert 4 in targets, cmds
+    _clear_runtime_state()
+    print(f"OK danger tactics preserve coordination (pressers={len(pressers)}, mark targets={targets})")
+
+
+def test_current_tactics_neutral_and_off_schema():
+    _clear_runtime_state()
+    assert hybrid.current_tactics() == hybrid.NEUTRAL
+    _set_tactics({"attack_side": "wide", "danger_opp_id": 9, "press_level": "panic"})
+    assert hybrid.current_tactics() == hybrid.NEUTRAL
+    _set_tactics({"attack_side": "L", "danger_opp_id": 2, "press_level": "high"}, age=25.0)
+    assert hybrid.current_tactics() == hybrid.NEUTRAL
+    _clear_runtime_state()
+    print("OK current_tactics neutralizes none/off-schema/stale")
+
+
+def test_observe_never_raises_on_malformed_state():
+    bad_states = [
+        None,
+        {},
+        {"players": [None, {"agentId": "x", "teamCode": "away", "position": {"x": "bad"}}]},
+        {"ball": {"position": {"x": object(), "z": object()}}, "players": "not-a-list"},
+    ]
+    for gs in bad_states:
+        hybrid.observe(gs, 0)
+    print("OK observe never raises on malformed game_state")
+
+
 if __name__ == "__main__":
     test_duplicate_agentid_possession_team()
     test_duplicate_agentid_nearest_ball()
@@ -253,4 +328,8 @@ if __name__ == "__main__":
     test_tired_presser_does_not_reserve_lone_carrier()
     test_carrier_reservation_respects_game_mode_lead()
     test_carrier_reservation_respects_game_mode_chase()
+    test_neutral_tactics_byte_identical()
+    test_danger_tactics_preserve_coordination()
+    test_current_tactics_neutral_and_off_schema()
+    test_observe_never_raises_on_malformed_state()
     print("\nALL CONTRACT TESTS PASSED")
