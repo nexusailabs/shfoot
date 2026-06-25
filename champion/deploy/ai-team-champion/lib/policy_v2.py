@@ -161,6 +161,79 @@ def role_for_player(my_id: int, formation: str | None = None) -> int:
     fmap = FORMATIONS.get(formation or ACTIVE_FORMATION, FORMATIONS["1-1-2"])
     return fmap.get(my_id, MID)
 
+
+# --------------------------------------------------------------------------- #
+# PLAYBOOK LIBRARY — discrete, pre-tuned deterministic optima (MINIMUM SAFE).   #
+#                                                                             #
+# A Playbook is NOT a continuous knob. It is a NAMED, fixed config that the     #
+# selector switches between. Each playbook re-anchors the role layer            #
+# (anchor_dx/anchor_dy fractions) + sets discrete tactic flags (formation /     #
+# press_beater). The per-tick policy reads a FIXED playbook, so a playbook can  #
+# NEVER inject per-tick variance — it only switches between clean optima.       #
+#                                                                             #
+# `enabled` is the per-playbook SHIP GATE (Codex review, 2026-06-25): every     #
+# counter ships enabled=False, so the deployed bot is == DEFAULT (the proven    #
+# 4/4 / 6-0 floor) until a counter is EMPIRICALLY PROVEN > DEFAULT on its       #
+# archetype in live A/B. Zero downside ships. DEFAULT is always enabled and     #
+# MUST stay byte-identical to the no-selector policy (golden test).             #
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class Playbook:
+    name: str
+    formation: str = "1-1-2"
+    tempo: str = "direct"                 # "direct" | "patient"
+    attack_zone: str | None = None        # None | "L" | "C" | "R" (unused by the shipped set)
+    press_beater: bool = False            # force fast vertical / in-behind release mode
+    anchor_dx: dict = field(default_factory=dict)   # slot -> ax fraction delta (re-anchor depth)
+    anchor_dy: dict = field(default_factory=dict)   # slot -> ay fraction delta (re-anchor width)
+    enabled: bool = False                 # SHIP GATE — counters off until live-proven > DEFAULT
+
+    def tactics(self) -> dict:
+        """Project the playbook onto the attack-only tactics dict the existing
+        _apply_attack_tactics / tempo seams consume. exploit_opp_id is always None
+        and push is always 0.0 (shape lives in the anchors, not a continuous push)."""
+        return {"attack_zone": self.attack_zone, "push": 0.0,
+                "exploit_opp_id": None, "tempo": self.tempo, "notes": ""}
+
+
+# Minimum-safe library: DEFAULT + exactly TWO gated counters. Anchor deltas are
+# FIXED constants (pre-tuned shape), not tunable params.
+PLAYBOOKS: dict[str, Playbook] = {
+    # The floor: unchanged 1-1-2 attack-always. No re-anchor, no flags. Always on.
+    "DEFAULT": Playbook("DEFAULT", enabled=True),
+    # vs a TWO-STRIKER / swarm attack: drop a player into a 2nd defender slot in
+    # CODE (2-1-1 re-anchor) + the existing MID drop-mark; keep attack-always on
+    # transition (the lone striker + mid stay high). Pure formation switch.
+    "TWO_STRIKER_COVER": Playbook(
+        "TWO_STRIKER_COVER", formation="2-1-1", tempo="direct", enabled=False),
+    # vs a HIGH-PRESS opponent: force fast vertical release + in-behind runs
+    # (selectable version of the existing press adaptation), push the strikers
+    # higher to threaten the space behind. DIRECT tempo.
+    "HIGH_PRESS_BEATER": Playbook(
+        "HIGH_PRESS_BEATER", formation="1-1-2", tempo="direct", press_beater=True,
+        anchor_dx={FWD1: 0.12, FWD2: 0.12}, enabled=False),
+}
+DEFAULT_PLAYBOOK = PLAYBOOKS["DEFAULT"]
+
+
+def _resolve_playbook(playbook) -> Playbook:
+    """Accept a Playbook, a name str, or None -> the active/default Playbook."""
+    if isinstance(playbook, Playbook):
+        return playbook
+    if isinstance(playbook, str):
+        return PLAYBOOKS.get(playbook, DEFAULT_PLAYBOOK)
+    return _active_playbook()
+
+
+def _active_playbook() -> Playbook:
+    """The playbook the selector last committed (in _STATE['playbook']). Unknown
+    or unset -> DEFAULT (fail-safe: cold / no-selector / no-LLM == the floor)."""
+    name = _STATE.get("playbook")
+    if not name:
+        return DEFAULT_PLAYBOOK
+    return PLAYBOOKS.get(name, DEFAULT_PLAYBOOK)
+
+
 LOW_STAMINA = 18.0               # lowered: attacking play needs sprints; only freeze when truly gassed
 SHOOT_MIN_PROB = 0.42           # only shoot if the shot model and geometry agree it is real
 SHOOT_NOW_PROB = 0.62           # high-confidence: shoot immediately, never pass it off
@@ -176,12 +249,21 @@ PRESS_RELEASE_MIN_SUCCESS = 0.44
 
 _STATE = {
     "press": {},                 # team_id -> {"t": gameTime, "ema": high-press score}
+    "playbook": None,            # active playbook NAME committed by the selector (None -> DEFAULT)
 }
 
 NEUTRAL_TACTICS = {"attack_zone": None, "push": 0.0, "exploit_opp_id": None, "tempo": "direct", "notes": ""}
 
 
+# Legacy LLM-tactics seam. OFF in production (proxy verdict 2026-06-25: pure deterministic).
+# When False, the per-tick DEFAULT path does NOT import the dormant hybrid module at all
+# (Codex gate fix) -> returns neutral directly, behavior byte-identical to before.
+_HYBRID_TACTICS_ENABLED = False
+
+
 def _current_tactics_safe() -> dict:
+    if not _HYBRID_TACTICS_ENABLED:
+        return dict(NEUTRAL_TACTICS)
     try:
         import hybrid
         return hybrid.current_tactics()
@@ -511,14 +593,22 @@ def _norm_stamina(raw) -> float:
     return v * 100.0 if v <= 1.0 else v
 
 
-def anchor_world(slot: int, team_id: int, push: float = 0.0) -> tuple[float, float]:
+def anchor_world(slot: int, team_id: int, push: float = 0.0,
+                 pb: "Playbook | None" = None) -> tuple[float, float]:
     cfg = ROLE_CONFIG[slot]
     d = 1 if team_id == 0 else -1
-    ax = max(-0.98, min(0.98, cfg.anchor_ax + push))
+    ax_frac = cfg.anchor_ax
+    ay_frac = cfg.anchor_ay
+    if pb is not None:
+        # Discrete playbook re-anchor. DEFAULT / pb=None carry empty delta dicts,
+        # so .get(...,0.0) -> 0.0 and `x + 0.0 == x` keeps DEFAULT byte-identical.
+        ax_frac += pb.anchor_dx.get(slot, 0.0)
+        ay_frac += pb.anchor_dy.get(slot, 0.0)
+    ax = max(-0.98, min(0.98, ax_frac + push))
     # Only x is direction-flipped per team (goals are on the x axis). y is NOT
     # flipped — the pitch is y-symmetric and the sample contract uses absolute y
     # (lib/fallback.py), so flipping it would diverge from the engine's frame.
-    return ax * FIELD_X * d, cfg.anchor_ay * FIELD_Z
+    return ax * FIELD_X * d, ay_frac * FIELD_Z
 
 
 def _forwardness(v: View, x: float) -> float:
@@ -746,7 +836,8 @@ def _carrier_pid(v: View):
     return _pid(c) if c is not None else None
 
 
-def _carrier_will_be_pressed(v: View, team_id: int, formation: str | None) -> bool:
+def _carrier_will_be_pressed(v: View, team_id: int, formation: str | None,
+                             pb: "Playbook | None" = None) -> bool:
     """True iff our DESIGNATED presser (the rank-0 outfielder closest to the ball)
     actually satisfies its press/tackle gate — replicating the DEF-at-feet and
     single-presser conditions (closest + not tired + in range + non-DEF in-zone).
@@ -771,7 +862,7 @@ def _carrier_will_be_pressed(v: View, team_id: int, formation: str | None) -> bo
     # chase widens press_trigger) -> apply the SAME scaling here so the reservation
     # matches the presser's real range.
     mode_press = _game_mode(v)["press"]
-    in_zone = _hypot(px, py, *anchor_world(pslot, team_id)) <= _zone_tol(pcfg) * 1.5
+    in_zone = _hypot(px, py, *anchor_world(pslot, team_id, pb=pb)) <= _zone_tol(pcfg) * 1.5
     return ball_d <= _press_dist(pcfg) * mode_press and in_zone   # single-presser gate
 
 
@@ -811,8 +902,16 @@ def _our_mid_pids(v: View, my_id: int, formation: str | None) -> list:
 # --------------------------------------------------------------------------- #
 # Core per-tick decision                                                      #
 # --------------------------------------------------------------------------- #
-def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = None) -> Cmd:
-    t = _current_tactics_safe()
+def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = None,
+           playbook: "Playbook | str | None" = None) -> Cmd:
+    # Resolve the active deterministic playbook (selector output / explicit / DEFAULT).
+    pb = _resolve_playbook(playbook)
+    # An explicitly-passed formation (back-compat / tests) wins; else the playbook's.
+    formation = formation or pb.formation
+    # DEFAULT keeps the legacy nudge-tactics seam (dormant in prod, exercised by
+    # tests) so the floor is byte-identical; any other playbook drives its OWN
+    # discrete tactic flags instead.
+    t = _current_tactics_safe() if pb.name == "DEFAULT" else pb.tactics()
     tactic_push = _tactic_push_ax(t)
     tactic_tempo = _tactic_tempo(t)
     slot = role_for_player(my_id, formation)        # tactical role under the active formation
@@ -824,6 +923,11 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
     tired = v.stamina < LOW_STAMINA
     gk_opp = _gk_of(v.opponents)  # opponent keeper xy for shot eval
     press = _press_profile(game_state, v)
+    # press-beater playbook forces a high-directness posture (fast vertical / in-behind)
+    # regardless of the measured press EMA. DEFAULT (press_beater False) -> unchanged.
+    directness = press["direct"]
+    if pb.press_beater:
+        directness = max(directness, 0.62)
 
     # game management: late-match score-aware scaling (neutral first 60s / at 0-0)
     mode = _game_mode(v)
@@ -845,7 +949,7 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
                 return Cmd("GK_DISTRIBUTE", {"target_player_id": o["pid"], "method": "THROW" if o["dist"] < _sx(0.45) else "KICK"}, 0, "GK distribute")
             return Cmd("GK_DISTRIBUTE", {"target_player_id": DEF, "method": "KICK"}, 0, "GK clear")
         # smother only a real close threat in the box
-        ax, ay = anchor_world(slot, team_id)
+        ax, ay = anchor_world(slot, team_id, pb=pb)
         near_box = abs(v.ball_xy[0] - v.my_goal_x) < _sx(0.20)
         if near_box and _closest_teammate_to_ball_is_me(v) and _hypot(*v.me_xy, *v.ball_xy) < _press_dist(cfg):
             return Cmd("PRESS_BALL", {"intensity": 0.9}, 2, "GK smother")
@@ -858,7 +962,7 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
                              [_field_xy(o) for o in v.opponents])
         attacker = _is_attacker(slot)
         real_chance = _shot_is_real_chance(v, v.me_xy[0], v.me_xy[1], shot)
-        directness = press["direct"]
+        # directness computed above (press EMA, raised by a press_beater playbook).
         # 1) HIGH-CONFIDENCE shot -> take it, never pass it off.
         if real_chance and shot["dist"] <= _shoot_dist(cfg) and shot["prob"] >= SHOOT_NOW_PROB:
             aim = _mixed_aim(shot["aim"], _seed_int("shoot", round(v.gt, 2), my_id, _ball_cell(v)))
@@ -909,7 +1013,9 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
             recv_shot = evaluate_shot(o["x"], o["y"], gk_opp, v.opp_goal_x,
                                       [_field_xy(opp) for opp in v.opponents])
             scored_opts.append((o, recv_shot))
-        if (attacker or def_deep_pressed) and _carrier_under_pressure(v, press):
+        under_pressure = _carrier_under_pressure(v, press) or (
+            pb.press_beater and press.get("nearest", 999.0) <= _sx(PRESS_NEAR_DIST))
+        if (attacker or def_deep_pressed) and under_pressure:
             release = _pressure_release_option(v, scored_opts, directness, formation)
             if release is not None:
                 ptype = release["type"]
@@ -957,7 +1063,7 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
     #    REVERTED: it broke shape and lost the clean sheet for a degenerate
     #    all-swarm opponent that no real team plays. Don't chase that metric.)
     ball_d = _hypot(*v.me_xy, *v.ball_xy)
-    in_zone = _hypot(*v.me_xy, *anchor_world(slot, team_id)) <= _zone_tol(cfg) * 1.5
+    in_zone = _hypot(*v.me_xy, *anchor_world(slot, team_id, pb=pb)) <= _zone_tol(cfg) * 1.5
 
     # 0) deterministic center restart: MID attacks the loose center ball while
     #    both strikers open lanes. GK+DEF stay in the normal home shape.
@@ -978,7 +1084,7 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
                 return Cmd("SLIDE_TACKLE", {"target_player_id": _pid(carrier), "sprint": True, "distance": round(_sx(0.07), 2)}, 0, "DEF tackle at feet")
             return Cmd("PRESS_BALL", {"intensity": 0.8}, 2, "DEF press at feet")
         _cpid = _carrier_pid(v)
-        _pressed = _carrier_will_be_pressed(v, team_id, formation)
+        _pressed = _carrier_will_be_pressed(v, team_id, formation, pb)
         intruders = _intruders(v, deprioritize_pid=_cpid, exclude_pid=(_cpid if _pressed else None))
         if intruders:
             # multi-defender coordination: defender k marks the k-th most dangerous
@@ -1006,7 +1112,7 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
     #     the single-presser anti-swarm invariant is preserved (no extra presser).
     if DROP_MARK_ENABLED and _is_mid(slot) and not v.we_have_ball and not tired:
         _cpid = _carrier_pid(v)
-        _pressed = _carrier_will_be_pressed(v, team_id, formation)
+        _pressed = _carrier_will_be_pressed(v, team_id, formation, pb)
         intruders = _intruders(v, deprioritize_pid=_cpid, exclude_pid=(_cpid if _pressed else None))
         num_def = len(_our_defender_pids(v, my_id, formation))
         mids = _our_mid_pids(v, my_id, formation)
@@ -1022,7 +1128,7 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
     if v.we_have_ball:
         holder = possession_holder(game_state)
         carrier_slot = role_for_player(_pid(holder), formation) if holder is not None else MID
-        support = _support_run(v, slot, my_id, holder, carrier_slot, press["direct"])
+        support = _support_run(v, slot, my_id, holder, carrier_slot, directness)
         if support is not None:
             tx, ty, sprint, reason = support
             if _is_mid(slot) or _is_fwd(slot):
@@ -1036,7 +1142,7 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
             push = min(push, 0.03)
         elif _is_mid(slot):
             push = min(push, 0.18)
-    ax, ay = anchor_world(slot, team_id, push)
+    ax, ay = anchor_world(slot, team_id, push, pb=pb)
     if v.we_have_ball:
         ax, ay = _apply_attack_tactics(v, ax, ay, t)
     if _hypot(*v.me_xy, ax, ay) > _zone_tol(cfg):
@@ -1064,8 +1170,9 @@ def _on_ball_opp(v: View):
 # --------------------------------------------------------------------------- #
 # Runtime entry: game_state -> the contest command dict                       #
 # --------------------------------------------------------------------------- #
-def command(game_state: dict, team_id: int, my_id: int, formation: str | None = None) -> dict:
-    c = decide(game_state, team_id, my_id, formation)
+def command(game_state: dict, team_id: int, my_id: int, formation: str | None = None,
+            playbook: "Playbook | str | None" = None) -> dict:
+    c = decide(game_state, team_id, my_id, formation, playbook)
     return {"commandType": c.commandType, "playerId": my_id, "teamId": team_id,
             "parameters": c.parameters, "duration": c.duration}
 

@@ -5,6 +5,7 @@ import os, sys
 import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hybrid
+import selector as S
 import policy_v2 as P
 
 
@@ -27,6 +28,13 @@ def _state(ball_xy, poss_aid=None, poss_team=None, home_pos=None, away_pos=None,
 def _clear_runtime_state():
     P._STATE["press"] = {}
     P._STATE.pop("tactics", None)
+    P._STATE["playbook"] = None
+
+
+def _enable(name, on=True):
+    """Temporarily flip a playbook's SHIP GATE (frozen dataclass -> rebuild)."""
+    import dataclasses
+    P.PLAYBOOKS[name] = dataclasses.replace(P.PLAYBOOKS[name], enabled=on)
 
 
 def _set_tactics(value, age=0.0):
@@ -360,6 +368,242 @@ def test_observe_never_raises_on_malformed_state():
     print("OK observe never raises on malformed game_state")
 
 
+# ============================ PLAYBOOK + SELECTOR ============================ #
+# Minimum-safe scope: DEFAULT + two GATED counters. The selector is a PURE function
+# of the SHARED gameState (team-coherent across the 5 separate-process agents), no
+# LLM, no per-process memory. Counters ship DISABLED -> the bot is == DEFAULT.
+
+# Golden states for byte-identity (on-ball, off-ball, multiple formations).
+_GOLDEN = [
+    (_state((5.0, -0.8), poss_aid="agentId_3", poss_team="home"), 0, 3, None),
+    (_state((0.5, 0.2)), 0, 2, "1-2-1"),
+    (_state((-4.0, 0.5), poss_aid="agentId_3", poss_team="away",
+            away_pos={0: (6.4, 0), 1: (3.0, 0), 2: (0.0, 0.6),
+                      3: (-4.0, 0.5), 4: (-3.6, -0.8)}), 0, 2, None),
+    (_state((-3.0, 0.0), poss_aid="agentId_1", poss_team="home",
+            home_pos={0: (-6.4, 0), 1: (-3.0, 0), 2: (-3.0, 1.2),
+                      3: (5.0, -0.8), 4: (5.0, 0.8)}), 0, 2, None),
+    (_state((-1.0, 0.0), poss_aid="agentId_2", poss_team="home",
+            home_pos={0: (-6.4, 0), 1: (-3.0, 0), 2: (-1.0, 0.0),
+                      3: (0.0, -0.8), 4: (0.0, 0.8)}), 0, 3, None),
+]
+
+
+def _two_striker_state(gt=30.0):
+    # 2 opponents (away) camped DEEP in our (home) defensive third (x ~ -4).
+    gs = _state((-4.0, 0.0), poss_team="away", poss_aid="agentId_3",
+                away_pos={0: (6.4, 0), 1: (3.0, 0), 2: (0.0, 0.0),
+                          3: (-4.0, 0.4), 4: (-4.2, -0.5)})
+    gs["gameTime"] = gt
+    return gs
+
+
+def _high_press_state(gt=30.0):
+    # 3 opponents in our half but NOT deep (no two-striker); home keeps the ball.
+    gs = _state((-0.5, 0.0), poss_team="home", poss_aid="agentId_2",
+                home_pos={0: (-6.4, 0), 1: (-3.0, 0), 2: (-0.5, 0.0), 3: (3.0, -0.8), 4: (3.0, 0.8)},
+                away_pos={0: (6.4, 0), 1: (-1.0, 0.6), 2: (-1.0, -0.6), 3: (-1.2, 0.0), 4: (4.5, 0.0)})
+    gs["gameTime"] = gt
+    return gs
+
+
+def test_default_playbook_byte_identical():
+    # DEFAULT playbook (explicit name, object, committed-state) == the no-playbook
+    # policy across every player + formation. The proven floor must be untouched.
+    for gs, team, pid, formation in _GOLDEN:
+        _clear_runtime_state()
+        floor = P.command(gs, team, pid, formation)
+        _clear_runtime_state()
+        explicit = P.command(gs, team, pid, formation, "DEFAULT")
+        _clear_runtime_state()
+        P._STATE["playbook"] = "DEFAULT"
+        committed = P.command(gs, team, pid, formation)
+        _clear_runtime_state()
+        obj = P.command(gs, team, pid, formation, P.DEFAULT_PLAYBOOK)
+        assert explicit == floor, (floor, explicit)
+        assert committed == floor, (floor, committed)
+        assert obj == floor, (floor, obj)
+    _clear_runtime_state()
+    print("OK DEFAULT playbook is byte-identical to the no-selector floor")
+
+
+def test_shipped_counters_disabled_is_default():
+    # SHIP GATE: with both counters disabled (the shipped state), the selector
+    # returns DEFAULT even on clear archetype states -> deployed bot == DEFAULT.
+    assert P.PLAYBOOKS["TWO_STRIKER_COVER"].enabled is False
+    assert P.PLAYBOOKS["HIGH_PRESS_BEATER"].enabled is False
+    for gs in (_two_striker_state(), _high_press_state()):
+        assert S.select_playbook(gs, 0) == "DEFAULT", "disabled counters must stay DEFAULT"
+        # ... and the emitted command equals the floor (no playbook) for all players.
+        for pid in range(5):
+            _clear_runtime_state()
+            floor = P.command(gs, 0, pid)
+            _clear_runtime_state()
+            picked = P.command(gs, 0, pid, None, S.select_playbook(gs, 0))
+            assert picked == floor, (pid, floor, picked)
+    _clear_runtime_state()
+    print("OK shipped (counters disabled) == DEFAULT floor on every archetype state")
+
+
+def test_selector_is_pure_and_team_coherent():
+    # PURE: select_playbook ignores agent identity (only gameState+team), is
+    # deterministic, and mutates NO module state -> all 5 processes agree.
+    _enable("TWO_STRIKER_COVER", True)
+    try:
+        gs = _two_striker_state()
+        snap = dict(P._STATE)
+        picks = [S.select_playbook(gs, 0) for _ in range(5)]   # "5 agents", same input
+        assert picks == ["TWO_STRIKER_COVER"] * 5, picks
+        assert P._STATE == snap, "select_playbook must not mutate _STATE (no per-process memory)"
+    finally:
+        _enable("TWO_STRIKER_COVER", False)
+    _clear_runtime_state()
+    print("OK selector is pure + team-coherent (no state, identical for all agents)")
+
+
+def test_classifier_detects_two_striker():
+    _enable("TWO_STRIKER_COVER", True)
+    try:
+        assert S.select_playbook(_two_striker_state(), 0) == "TWO_STRIKER_COVER"
+        # only ONE opponent deep -> below threshold -> DEFAULT (conservative)
+        one = _state((-4.0, 0.0), poss_team="away", poss_aid="agentId_3",
+                     away_pos={0: (6.4, 0), 1: (3.0, 0), 2: (1.0, 0.0),
+                               3: (-4.0, 0.4), 4: (2.0, -0.5)})
+        one["gameTime"] = 30.0
+        assert S.select_playbook(one, 0) == "DEFAULT", "1 deep opponent must NOT trip the counter"
+    finally:
+        _enable("TWO_STRIKER_COVER", False)
+    print("OK two-striker detected at >=2 deep, conservative below threshold")
+
+
+def test_classifier_detects_high_press():
+    _enable("HIGH_PRESS_BEATER", True)
+    try:
+        assert S.select_playbook(_high_press_state(), 0) == "HIGH_PRESS_BEATER"
+        # only 2 opponents in our half -> below threshold -> DEFAULT
+        two = _state((-0.5, 0.0), poss_team="home", poss_aid="agentId_2",
+                     home_pos={0: (-6.4, 0), 1: (-3.0, 0), 2: (-0.5, 0.0), 3: (3.0, -0.8), 4: (3.0, 0.8)},
+                     away_pos={0: (6.4, 0), 1: (-1.0, 0.6), 2: (-1.0, -0.6), 3: (4.0, 0.0), 4: (4.5, 0.0)})
+        two["gameTime"] = 30.0
+        assert S.select_playbook(two, 0) == "DEFAULT"
+    finally:
+        _enable("HIGH_PRESS_BEATER", False)
+    print("OK high-press detected at >=3 in our half, conservative below threshold")
+
+
+def test_scout_gate_holds_default_early():
+    _enable("TWO_STRIKER_COVER", True)
+    try:
+        early = _two_striker_state(gt=2.0)   # before SCOUT_SECONDS
+        assert S.select_playbook(early, 0) == "DEFAULT", "scout window must hold DEFAULT early"
+    finally:
+        _enable("TWO_STRIKER_COVER", False)
+    print("OK gameTime scout gate holds DEFAULT before shapes settle")
+
+
+def test_high_press_not_switched_during_goal_danger():
+    # Opponent possesses DEEP in our third -> never switch to the attacking
+    # press-beater shape at a dangerous moment (Codex conservative gate).
+    _enable("HIGH_PRESS_BEATER", True)
+    try:
+        gs = _state((-5.0, 0.0), poss_team="away", poss_aid="agentId_3",
+                    away_pos={0: (6.4, 0), 1: (-1.0, 0.6), 2: (-1.0, -0.6),
+                              3: (-5.0, 0.0), 4: (4.5, 0.0)})
+        gs["gameTime"] = 30.0
+        # 3 opponents in our half (press) BUT one possesses deep in our third.
+        assert S.select_playbook(gs, 0) == "DEFAULT", "must not switch under goal-danger possession"
+    finally:
+        _enable("HIGH_PRESS_BEATER", False)
+    print("OK high-press not switched during opponent possession near our goal")
+
+
+def test_two_striker_priority_over_high_press():
+    _enable("TWO_STRIKER_COVER", True)
+    _enable("HIGH_PRESS_BEATER", True)
+    try:
+        # qualifies for BOTH (>=2 deep AND >=3 in half) -> defensive counter wins.
+        gs = _state((-4.0, 0.0), poss_team="away", poss_aid="agentId_3",
+                    away_pos={0: (6.4, 0), 1: (-1.0, 0.0), 2: (-3.0, 0.6),
+                              3: (-4.0, 0.4), 4: (-4.2, -0.5)})
+        gs["gameTime"] = 30.0
+        assert S.select_playbook(gs, 0) == "TWO_STRIKER_COVER"
+    finally:
+        _enable("TWO_STRIKER_COVER", False)
+        _enable("HIGH_PRESS_BEATER", False)
+    print("OK TWO_STRIKER_COVER takes priority over HIGH_PRESS_BEATER")
+
+
+def test_select_never_raises_on_malformed():
+    _enable("TWO_STRIKER_COVER", True)
+    try:
+        for junk in [None, {}, {"players": None}, {"players": "x", "gameTime": "z"},
+                     {"players": [None, 1, {"position": {"x": object()}}], "gameTime": 30}]:
+            assert S.select_playbook(junk, 0) == "DEFAULT"
+    finally:
+        _enable("TWO_STRIKER_COVER", False)
+    print("OK select_playbook never raises on malformed state -> DEFAULT")
+
+
+def _pressers_and_marks(gs, formation, playbook=None):
+    pressers, mark_targets = 0, []
+    for pid in range(1, 5):
+        c = P.command(gs, 0, pid, formation, playbook)
+        if c["commandType"] in ("PRESS_BALL", "SLIDE_TACKLE"):
+            pressers += 1
+        elif c["commandType"] == "MARK":
+            mark_targets.append(c["parameters"]["target_player_id"])
+    return pressers, mark_targets
+
+
+def test_every_playbook_preserves_invariants():
+    # Each playbook must keep: single-presser, no-double-mark, attack-always mode.
+    gs = _state((-5.0, 0.5), poss_team="away", poss_aid="agentId_3",
+                away_pos={0: (6.4, 0), 1: (3.0, 0), 2: (0.0, 0.0),
+                          3: (-5.0, 0.5), 4: (-4.6, -0.6)})
+    for name in P.PLAYBOOKS:
+        _clear_runtime_state()
+        pressers, targets = _pressers_and_marks(gs, None, name)   # playbook drives formation
+        assert pressers <= 1, (name, "double press", pressers)
+        assert len(set(targets)) == len(targets), (name, "double mark", targets)
+        v = type("V", (), {"gt": 110.0, "goal_diff": 1})()
+        assert P._game_mode(v)["risk"] == 1.0, (name, "must not lead-protect (attack-always)")
+    _clear_runtime_state()
+    print("OK every playbook preserves single-presser + no-double-mark + attack-always")
+
+
+def test_two_striker_cover_211_single_presser():
+    # TWO_STRIKER_COVER runs a 2-1-1 in code (DEF2 added); single-presser must hold.
+    _clear_runtime_state()
+    gs = _state((0.5, 0.2))
+    pressers, _ = _pressers_and_marks(gs, None, "TWO_STRIKER_COVER")
+    assert pressers <= 1, pressers
+    assert P.role_for_player(2, P.PLAYBOOKS["TWO_STRIKER_COVER"].formation) == P.DEF2
+    _clear_runtime_state()
+    print("OK TWO_STRIKER_COVER 2-1-1 keeps single-presser invariant")
+
+
+def test_high_press_beater_keeps_shoot_and_possession():
+    # A clear in-box chance still SHOOTs; on/off-ball commands all stay legal.
+    _clear_runtime_state()
+    gs = _state((5.0, -0.8), poss_aid="agentId_3", poss_team="home")
+    c = P.command(gs, 0, 3, None, "HIGH_PRESS_BEATER")
+    assert c["commandType"] in ("SHOOT", "PASS", "MOVE_TO"), c
+    for pid in range(5):
+        cc = P.command(gs, 0, pid, None, "HIGH_PRESS_BEATER")
+        assert cc["commandType"], (pid, cc)
+    _clear_runtime_state()
+    print(f"OK HIGH_PRESS_BEATER preserves shoot/possession logic (home3={c['commandType']})")
+
+
+def test_selector_pure_no_bedrock_no_llm():
+    # No network deps and no LLM symbols in the selector decision path.
+    assert "boto3" not in dir(S), "selector must not import boto3"
+    for sym in ("llm_suggest", "classify_window", "select"):
+        assert not hasattr(S, sym), f"removed LLM/stateful API still present: {sym}"
+    assert hasattr(S, "select_playbook"), "pure select_playbook must exist"
+    print("OK selector is pure deterministic (no Bedrock, no LLM, no stateful select)")
+
+
 if __name__ == "__main__":
     test_duplicate_agentid_possession_team()
     test_duplicate_agentid_nearest_ball()
@@ -382,4 +626,18 @@ if __name__ == "__main__":
     test_attack_tactics_preserve_coordination()
     test_current_tactics_neutral_and_off_schema()
     test_observe_never_raises_on_malformed_state()
+    # --- playbook + selector (team-coherent, gated, deterministic) ---
+    test_default_playbook_byte_identical()
+    test_shipped_counters_disabled_is_default()
+    test_selector_is_pure_and_team_coherent()
+    test_classifier_detects_two_striker()
+    test_classifier_detects_high_press()
+    test_scout_gate_holds_default_early()
+    test_high_press_not_switched_during_goal_danger()
+    test_two_striker_priority_over_high_press()
+    test_select_never_raises_on_malformed()
+    test_every_playbook_preserves_invariants()
+    test_two_striker_cover_211_single_presser()
+    test_high_press_beater_keeps_shoot_and_possession()
+    test_selector_pure_no_bedrock_no_llm()
     print("\nALL CONTRACT TESTS PASSED")
