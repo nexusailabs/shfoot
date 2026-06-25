@@ -20,6 +20,12 @@ TACTICS_STALE_S = 20.0
 WINDOW_CAP = 120
 MODEL_ID = "us.anthropic.claude-sonnet-4-6"
 REGION = "us-east-1"
+# SHIPPED CONFIG = pure deterministic (proxy verdict 2026-06-25, operator A): the LLM
+# slow loop is OFF by default — it measurably underperformed the hand-tuned attack-always
+# policy on every testable opponent (agg 4/4 -> 1/3, defensive 4-0/6-0 -> 0-0) by perturbing
+# a near-optimal policy. The code stays as a flag-gated lever: flip to True to re-enable the
+# Sonnet adaptation as a tournament hedge vs genuinely ADAPTING expert opponents.
+HYBRID_ENABLED = False
 NEUTRAL = {"attack_zone": None, "push": 0.0, "exploit_opp_id": None, "tempo": "direct", "notes": ""}
 
 ALLOWED_KEYS = {"attack_zone", "push", "exploit_opp_id", "tempo", "notes"}
@@ -371,7 +377,10 @@ def _slow_worker(team_id: int, position_label: str) -> None:
 
 
 def start_slow_loop(team_id, position_label) -> None:
-    """Start one daemon slow-loop thread per process. Idempotent."""
+    """Start one daemon slow-loop thread per process. Idempotent.
+    No-op when HYBRID_ENABLED is False -> the bot is PURE deterministic (shipped config)."""
+    if not HYBRID_ENABLED:
+        return
     try:
         team_id = int(team_id or 0)
         mem = _mem()
