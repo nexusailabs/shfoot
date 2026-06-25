@@ -102,15 +102,16 @@ def test_single_presser_invariant_all_formations():
 
 
 def test_game_management_scaling():
-    early = type("V", (), {"gt": 30.0, "goal_diff": 1})()
+    early = type("V", (), {"gt": 30.0, "goal_diff": -1})()
     lead = type("V", (), {"gt": 110.0, "goal_diff": 1})()
     chase = type("V", (), {"gt": 110.0, "goal_diff": -1})()
     assert P._game_mode(early)["risk"] == 1.0, "first 60s must be neutral"
     m_lead = P._game_mode(lead)
-    assert m_lead["risk"] < 1.0 and m_lead["push_delta"] < 0, "lead late -> protect"
+    # 2-min shootout: NO lead-protect — leading keeps attacking (neutral), never sits.
+    assert m_lead["risk"] == 1.0 and m_lead["push_delta"] == 0.0, "lead late must NOT sit deeper"
     m_chase = P._game_mode(chase)
-    assert m_chase["risk"] > 1.0 and m_chase["push_delta"] > 0, "chase late -> commit"
-    print("OK game-management scaling (neutral early, protect lead, chase deficit)")
+    assert m_chase["risk"] > 1.0 and m_chase["push_delta"] > 0, "chase late -> commit more attack"
+    print("OK game-management (attack-always: no lead-protect, chase boosts attack)")
 
 
 def test_mixing_reproducible_and_safe():

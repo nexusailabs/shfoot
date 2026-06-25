@@ -613,14 +613,14 @@ def _center_restart(v: View) -> bool:
 # Neutral in the first 60s and at level score, so early/0-0 play is unchanged. #
 # --------------------------------------------------------------------------- #
 def _game_mode(v: View) -> dict:
+    # 2-min matches are SHOOTOUTS: protecting a lead ("sit deeper") just invites the
+    # equalizer, so we NEVER ease off — attack always (operator directive 2026-06-25).
+    # Leading or level -> play the normal attacking base; only ADD attack when chasing.
     t = v.gt or 0.0
     k = 0.0 if t < 60 else (0.5 if t < 90 else 1.0)   # ramp: mild 60-90s, strong >90s
-    gd = v.goal_diff
-    if k == 0.0 or gd == 0:
+    if k == 0.0 or v.goal_diff >= 0:                   # level OR leading -> keep attacking
         return {"push_delta": 0.0, "risk": 1.0, "press": 1.0, "shoot": 1.0}
-    if gd > 0:   # leading -> protect: sit deeper, lower risk, lower press radius
-        return {"push_delta": -0.10 * k, "risk": 1.0 - 0.4 * k, "press": 1.0 - 0.25 * k, "shoot": 1.0}
-    # chasing -> commit: push up, more risk/press, wider shot tolerance
+    # chasing -> commit harder: push up, more risk/press, wider shot tolerance
     return {"push_delta": 0.10 * k, "risk": 1.0 + 0.4 * k, "press": 1.0 + 0.2 * k, "shoot": 1.0 + 0.2 * k}
 
 
