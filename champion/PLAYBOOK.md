@@ -69,6 +69,38 @@ VARIANCE (§9). On aggressive, trust §9 over §3.
 >    third only). DEFERRED now (reverted-2nd-presser regression risk; needs live evidence first).
 > 3. Before final tournament lock: revert **FCTICK_ENABLED=False** (clean hot path).
 >
+> ### MANAGER WHOLE-PICTURE + L2 (2026-06-27, operator: "정말 축구 감독으로 전체 그림")
+> Operator goal clarified: a COMPLETE deterministic football manager — every role (GK/DEF/MID/FWD) perfect,
+> all knobs mapped, + phase tactics (attack when we hold; on losing it, win-back + COUNTER choosing
+> LONG-BALL vs THROUGH-PASS vs CARRY). Answer: ACHIEVABLE — the machinery mostly EXISTS, just flag-off /
+> un-tuned / never assembled+watched as a manager. Evidence = Opus whole-picture map + an independent
+> Codex audit (`champion/_build/CODEX-MANAGER-AUDIT-RESULT.md`, gpt-5.5 high, MCP-off): ~50 knobs inventory,
+> phase×role decision matrix, gaps, top-5 levers — all file:line, cross-checked vs the Opus map (agreement).
+> Codex headline finding: of "롱볼 vs 스루", LONG-BALL was the ONE missing piece (counter force-labelled THROUGH).
+>
+> **The manager build is LAYERED (one lever at a time, flag-gated, each validated):**
+> - **L0** `3eaf110` LLM recover hybrid (HYBRID_ENABLED=True; off-critical-path `recover` dial; fail-safe=baseline).
+> - **L1** `03c14c5` sharp OFF-BALL: MARK_AS_MOVE_COVER=True (no-op MARK 135→0) + loose-ball contest (3%→17%).
+> - **L2** `cbe7ada` COUNTER-ATTACK: COUNTER_MODE_ENABLED=True + the LONG-BALL/THROUGH/CARRY selector. A runner
+>   PAST THE LAST OUTFIELD LINE (opp GK excluded — fixed bug that made "in behind" impossible) → lofted AERIAL
+>   scored on distance only (clears ground interceptors); nearer in-behind → GROUND/THROUGH; none → carry. New
+>   knobs COUNTER_LONGBALL_DIST=0.55, COUNTER_AERIAL_MIN_SUCCESS=0.20. Contract+probe validated; replay 1675
+>   decisions no crash; counter did NOT trigger on that one frozen match (needs deep ball-win + ≥2 opp committed).
+>
+> **⚠️ STATE: 3 layers stacked, ALL offline-validated ONLY (contract + probe + replay command-behaviour). NONE
+> live-validated** — the event is OVER, so the only remaining test is REAL COMPETITION. The §3 discipline note:
+> stacking unvalidated levers means we can't attribute effect; in real matches, watch the MECHANISM via FCTICK
+> (free-shooter%↓, loose-ball win-rate↑, does COUNTER fire + pick long/through sensibly) NOT noisy win%.
+>
+> **REMAINING LAYERS (not built): L3 creation in-behind (INBEHIND_RUN+THROUGHBALL_EV), L4 deterministic
+> recovery (drop the LLM gate; RECOVERY_DEF_ENABLED or a deterministic free-shooter trigger), L5 tune the 30
+> RoleConfig positional knobs as a coherent set. Selector counters (TWO_STRIKER_COVER/HIGH_PRESS_BEATER)
+> remain enabled=False.**
+>
+> **BEFORE REAL COMPETITION:** revert `FCTICK_ENABLED=False` (build_deploy.py:48) for a clean hot path; redeploy
+> via CloudShell `deploy-all.sh` (fresh hourly creds); confirm `bedrock:InvokeModel` on the agent role if you
+> want L0's slow loop to actually fire (else it fail-safes to baseline — harmless). Branch feat/champion-tactical-layer.
+>
 > ### META-LESSON (the real fix for directionlessness)
 > Blind win%-tuning on a noise-dominated metric = the cause of the flailing. The cure was the §0 move applied
 > to GAMEPLAY: **watch what the bot actually does** (replay through the policy), find concrete behavioural
