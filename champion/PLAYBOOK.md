@@ -18,6 +18,63 @@ The 2026-06-25 session settled the core questions with LIVE A/B data. Read §0 f
 anything; §1-§9 are detail/history. ⚠️ §3's ledger shows "4/4 aggressive" — that was later proven to be
 VARIANCE (§9). On aggressive, trust §9 over §3.
 
+> ═══════════════════════════════════════════════════════════════════════════════════════════════
+> ## ⚡ LATEST SESSION — 2026-06-26/27 — THE AXIS WAS WRONG: it's PASSIVE-vs-SHARP off-ball, not LLM-vs-code
+> ═══════════════════════════════════════════════════════════════════════════════════════════════
+> **Read this FIRST — it supersedes the framing below.** Commits `3eaf110` (LLM recover hybrid) →
+> `03c14c5` (sharp deterministic off-ball — THE build). Branch feat/champion-tactical-layer.
+>
+> ### The reframe (operator's call, vindicated by data)
+> Six deterministic levers + the LLM hybrid all explored only "MORE ATTACK". The whole session had been
+> chasing **win% vs the aggressive sparring bot — which is PURE NOISE** (n≈12, ~8% power; ±6 goal variance).
+> The operator's frustration ("왜 갈피를 못잡냐") was correct: **we had NEVER WATCHED THE BOT PLAY.**
+> The real axis is not "LLM brain vs code brain" — it is **bland/passive play vs sharp/decisive play.**
+> The operator's own key insight: **the LLM hybrid was scrapped because it REGRESSES TO A NEUTRAL MEAN** —
+> i.e. LLM is the WRONG tool for "정말 컴퓨터처럼 날카롭게" decisive play. Deterministic is the right tool.
+>
+> ### Pure-LLM record CORRECTED (the "LLM won" memory)
+> Operator recalled pure-LLM (prompt-only, sample-style) "winning 4-0". Verified from _build/SAMPLE-LLM*.md:
+> those 4-0/5-0 wins were vs **balanced/defensive** (every build beats those). **vs aggressive, pure LLM
+> went 2W-4L (33%)**; deterministic pooled ~60%. AND pure-LLM averaged **845ms/tick (one agent 9493ms) ≫
+> the <500ms budget** → it plays a tick behind → fatal vs a fast flooder. So per-tick LLM is OFF THE TABLE;
+> the only way to use LLM is the two-timescale hybrid (deterministic per-tick + slow loop off critical path).
+>
+> ### §0 TREASURE: replay the bot through its own policy (champion/_build/LIVE-FCTICK.jsonl, a real 1-2 loss)
+> Reconstruct each tick's gameState and re-run policy_v2.command() on it. Measured behaviour:
+> - **49% of the match is loose-ball, but we contested only 3% of those ticks** — held anchor shape, let it sit.
+> - **135 MARK commands/match are ENGINE NO-OPS** (49 vs-carrier + 86 loose) → "marking" defence was FICTION;
+>   the marker idled while the man got free → **63% of opponent-in-our-half ticks had a FREE SHOOTER.**
+> - **Attack was already fine** — 100% of our possession ticks had shot/pass/sprint intent. The leak is OFF-BALL.
+>
+> ### What shipped (commit 03c14c5) — sharp deterministic OFF-BALL, two safe high-value fixes
+> 1. **`MARK_AS_MOVE_COVER = True`** — every MARK now executes as a goal-side MOVE-cover (carries
+>    target_player_id for coordination) so defenders PHYSICALLY get between man and goal. Replay: no-op MARK 135→0.
+> 2. **Loose-ball contest** (new block in decide(), after _center_restart): when NEITHER team possesses, the
+>    closest outfielder (2 in our half) sprints onto the ball / PRESSES. Does NOT touch the anti-swarm
+>    single-presser rule (that guards swarming a CARRIER; a loose ball has none). Replay: contest 3%→17%.
+> - Contract suite (40+) passes; single-presser + no-double-mark invariants now verified via MOVE-cover
+>   target_player_id. New test test_llm_recover_balance_lever + recover validation. sim2 clean (0.038ms/tick).
+> - The `3eaf110` LLM hybrid (HYBRID_ENABLED=True; LLM sets ONLY a `recover` 0..1 balance dial off the
+>   critical path; fail-safe to NEUTRAL==baseline) is now SECONDARY — the deterministic fixes carry the defence.
+>
+> ### ⚠️ HONEST validation scope (no blind win%-chasing)
+> The replay PROVES the COMMAND behaviour changed (idle/no-op → real cover/contest) — deterministic, certain.
+> It CANNOT prove the OUTCOME (free-shooter%, goals): replay positions are HISTORICAL/FROZEN, so re-running the
+> policy can't move the players. Outcome needs a LIVE match (with FCTICK on, NEW positions evolve).
+>
+> ### NEXT (in order)
+> 1. Deploy (CloudShell deploy-all.sh, fresh hourly creds) + 1-2 LIVE aggressive matches. Judge on the
+>    **MECHANISM via fresh FCTICK** (free-shooter%, loose-ball win-rate, goal-side count) — NOT noisy win%.
+> 2. If live STILL shows free-shooters → add task: **turnover counter-press** (relax single-presser to 2 in our
+>    third only). DEFERRED now (reverted-2nd-presser regression risk; needs live evidence first).
+> 3. Before final tournament lock: revert **FCTICK_ENABLED=False** (clean hot path).
+>
+> ### META-LESSON (the real fix for directionlessness)
+> Blind win%-tuning on a noise-dominated metric = the cause of the flailing. The cure was the §0 move applied
+> to GAMEPLAY: **watch what the bot actually does** (replay through the policy), find concrete behavioural
+> failures, fix those deterministically. Watch the behaviour, not the scoreline.
+> ═══════════════════════════════════════════════════════════════════════════════════════════════
+
 > ⚠️⚠️ **CORRECTION (2026-06-25, 3-Opus panel + Codex-gated) — §9's "no lever moves it / 50% is the GAME's
 > ceiling, PROVEN" is DOWNGRADED from certainty to UNCERTAINTY.** Two verified errors: (1) every "lever
 > doesn't work" A/B was n≈3-4/arm on W/L scoreline = ~8% power to detect even a +20%p edge (95% CI on our
