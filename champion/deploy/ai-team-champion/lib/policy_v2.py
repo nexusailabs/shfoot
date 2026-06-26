@@ -267,10 +267,17 @@ PRESS_RELEASE_MIN_SUCCESS = 0.44
 # It is an ATTACK accelerant only: GK+DEF off-ball shape is unchanged, and the   #
 # single-presser / no-double-mark / carrier-reservation invariants are untouched.#
 # --------------------------------------------------------------------------- #
-COUNTER_MODE_ENABLED = False
+# 2026-06-27 (operator decision: full football-manager — "뺏기면 역습, 롱볼 vs 스루"): ENABLED.
+# Off=byte-identical floor; on, a deep ball-win with >=2 opponents committed forward springs an
+# IMMEDIATE break (FWDs run in-behind, carrier plays the fastest forward ball). GK+DEF shape +
+# single-presser/no-double-mark invariants are untouched (attack accelerant only). L2 adds the
+# missing LONG-BALL choice (the audit found the carrier always forced "THROUGH").
+COUNTER_MODE_ENABLED = True
 COUNTER_MIN_OPP_FORWARD = 2        # >=2 opponents in OUR half = committed forward (FCTICK-validated)
 COUNTER_THROUGH_MIN_SUCCESS = 0.50 # fire the direct through-ball only through a genuinely open lane
 COUNTER_THROUGH_MIN_GAIN = 0.10    # receiver must be meaningfully ahead of the carrier (frac FIELD_X)
+COUNTER_LONGBALL_DIST = 0.55       # runner farther than this (frac FIELD_X) -> loft an AERIAL ball over the top, not a ground THROUGH
+COUNTER_AERIAL_MIN_SUCCESS = 0.20  # a long ball over the top is a gamble that clears ground interceptors -> lower bar than a ground THROUGH
 COUNTER_FWD_RUN_AX = 0.62          # in-behind run depth: attacking-frame fraction toward the opp goal
 COUNTER_FWD_RUN_AY = 0.32          # channel split width (frac FIELD_Z); FWD1 left, FWD2 right
 COUNTER_CARRY_STEP = 0.30          # sprint-carry step (frac FIELD_X) when no in-behind runner exists yet
@@ -950,20 +957,43 @@ def _counter_carrier_cmd(v: View, scored_opts: list, formation: str | None, t: d
     """Carrier on a counter: the FASTEST forward ball, never a backward recycle.
     A DIRECT through-ball to the most advanced open teammate in the space behind,
     else a sprint-carry up the most open channel toward the opp goal."""
+    # LONG-BALL vs THROUGH vs CARRY (operator: choose by reading the space). Two kinds of forward ball:
+    #   - GROUND/THROUGH: driven into feet through an OPEN lane (needs real ground success).
+    #   - AERIAL long ball: lofted OVER the committed line to a runner far in behind. A long ball clears
+    #     the ground interceptors that calculate_pass_options penalises, so it gets a LOWER success bar.
+    # We emit the pass type calculate_pass_options already assigned by distance+lane (GROUND/THROUGH/AERIAL),
+    # instead of force-labelling everything THROUGH (the audit's missing-long-ball gap).
+    # The last OUTFIELD opponent line (exclude their GK, who sits on their goal line): a runner
+    # past it is genuinely "in behind" and a candidate for a lofted ball over the top.
+    last_line = max((_upfield(v, _field_xy(op)[0]) for op in v.opponents if _pid(op) != GK), default=0.0)
     cands = []
     for o, _s in scored_opts:
         if o["pid"] == GK:
             continue
-        if _forwardness(v, o["x"]) <= _sx(COUNTER_THROUGH_MIN_GAIN) or o["success"] < COUNTER_THROUGH_MIN_SUCCESS:
+        if _forwardness(v, o["x"]) <= _sx(COUNTER_THROUGH_MIN_GAIN):
             continue
+        in_behind = _upfield(v, o["x"]) > last_line
+        is_long = in_behind and (o["type"] == "AERIAL" or o["dist"] >= _sx(COUNTER_LONGBALL_DIST))
+        if is_long:
+            # LONG BALL over the top: a loft clears ground interceptors, so score it on DISTANCE
+            # only (calculate_pass_options' ground-lane risk does not apply to an aerial).
+            succ = max(0.05, 1.0 - o["dist"] / _sx(3.2))
+            if succ < COUNTER_AERIAL_MIN_SUCCESS:
+                continue
+        else:
+            # GROUND/THROUGH into feet: needs a genuinely open lane (real ground success).
+            if o["success"] < COUNTER_THROUGH_MIN_SUCCESS:
+                continue
+            succ = o["success"]
         recv_slot = role_for_player(o["pid"], formation)
         role_bonus = 0.6 if _is_fwd(recv_slot) else (0.2 if _is_mid(recv_slot) else -1.0)
-        score = _upfield(v, o["x"]) / FIELD_X + 0.5 * o["success"] + role_bonus - 0.3 * o["risk"]
-        cands.append((score, o))
+        score = _upfield(v, o["x"]) / FIELD_X + 0.5 * succ + role_bonus + (0.25 if is_long else 0.0)
+        cands.append((score, o, is_long))
     if cands:
-        o = max(cands, key=lambda c: c[0])[1]
-        return Cmd("PASS", {"target_player_id": o["pid"], "type": "THROUGH"}, 0,
-                   f"COUNTER through->{o['pid']} s={round(o['success'], 2)}")
+        score, o, is_long = max(cands, key=lambda c: c[0])
+        ptype = "AERIAL" if is_long else ("GROUND" if o["dist"] < _sx(0.36) else "THROUGH")
+        return Cmd("PASS", {"target_player_id": o["pid"], "type": ptype}, 0,
+                   f"COUNTER {ptype.lower()}->{o['pid']} d={round(o['dist'],1)}")
     # no runner has arrived yet -> sprint-carry directly upfield into the open channel
     tx = v.me_xy[0] + v.dir * _sx(COUNTER_CARRY_STEP)
     ty = _counter_carry_y(v)
