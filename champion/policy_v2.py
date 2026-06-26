@@ -275,6 +275,22 @@ COUNTER_FWD_RUN_AX = 0.62          # in-behind run depth: attacking-frame fracti
 COUNTER_FWD_RUN_AY = 0.32          # channel split width (frac FIELD_Z); FWD1 left, FWD2 right
 COUNTER_CARRY_STEP = 0.30          # sprint-carry step (frac FIELD_X) when no in-behind runner exists yet
 
+# --------------------------------------------------------------------------- #
+# SUSTAINED-POSSESSION CREATION levers (2026-06-26). The counter above fires    #
+# only on a DEEP TURNOVER (ball in our half); these attack the OTHER, untested  #
+# cap: during sustained final-third possession the spare FWD's run sits ~0.64u   #
+# IN FRONT of the opp last line, so the forward ball lands loose with no runner  #
+# truly in behind (live in-behind only 0-18%). Powered baseline (12 aggressive   #
+# matches, a742108) measured the symptom: us:opp shot volume = 0.54 — we get     #
+# HALF the shots and survive only on finishing (57% vs 35%). Lever A pushes the   #
+# run BEYOND the last outfield line; lever B considers + rewards the through-ball #
+# to a runner genuinely in behind. Each is default-OFF and OFF = byte-identical   #
+# to the shipped build; promote only on a powered A/B vs the baseline above.      #
+# --------------------------------------------------------------------------- #
+INBEHIND_RUN_ENABLED = False       # lever A: FWD final-third run target goes BEYOND the last outfield line
+THROUGHBALL_EV_ENABLED = False     # lever B: surface + EV-reward a through-ball to a runner in behind
+THROUGHBALL_EV_WEIGHT = 0.5        # EV weight on an in-behind receiver (only used when lever B is ON)
+
 
 _STATE = {
     "press": {},                 # team_id -> {"t": gameTime, "ema": high-press score}
@@ -650,6 +666,15 @@ def _upfield(v: View, x: float) -> float:
     return x * v.dir
 
 
+def _last_outfield_line_ax(v: View) -> float:
+    """Attacking-frame x of the opponent's LAST outfield defender (their GK = pid 0
+    excluded). + = closer to the opp goal; a runner/receiver with _upfield > this is
+    genuinely IN BEHIND the last line. Falls back to midfield (0.0) if no outfield
+    opponent is visible. Pure function of the shared gameState (team-coherent)."""
+    axs = [_upfield(v, _field_xy(o)[0]) for o in v.opponents if _pid(o) != 0]
+    return max(axs) if axs else 0.0
+
+
 def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
 
@@ -791,7 +816,16 @@ def _support_run(v: View, slot: int, my_id: int, holder: dict | None,
             return hx + v.dir * _sx(0.38), side * _sz(0.30), True, "press in-behind outlet"
         if final_third:
             far_side = (-1 if hy > 0 else 1) if carrier_is_fwd else side
-            return v.opp_goal_x - v.dir * _sx(0.10), far_side * GOAL_HALF_WIDTH * 0.75, True, "attack box outlet"
+            tx = v.opp_goal_x - v.dir * _sx(0.10)
+            if INBEHIND_RUN_ENABLED:
+                # Lever A: run BEYOND the opp last outfield line (capped just short of
+                # the goal line), not the fixed spot 0.64u in front of it. MONOTONE:
+                # never shallower than the old target, so in-behind% can only rise.
+                line_ax = _last_outfield_line_ax(v)
+                cap_ax = _upfield(v, v.opp_goal_x) - _sx(0.03)
+                tgt_ax = min(cap_ax, max(line_ax + _sx(0.08), _upfield(v, tx)))
+                tx = tgt_ax * v.dir
+            return tx, far_side * GOAL_HALF_WIDTH * 0.75, True, "attack box outlet"
         return hx + v.dir * _sx(0.24), side * _sz(0.24), True, "stretch forward outlet"
     return None
 
@@ -1149,6 +1183,17 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
         if tactic_tempo == "patient":
             safe_opts = [o for o in opts if o["success"] > 0.72 and _forwardness(v, o["x"]) >= -_sx(0.03)]
         pool = fwd_opts or safe_opts or [o for o in opts if o["success"] > 0.64]
+        line_ax = None
+        if THROUGHBALL_EV_ENABLED:
+            # Lever B: SURFACE a genuine in-behind through-ball into the pool (it may
+            # fall below the fwd_opts success floor), then EV-reward it below. Gated on
+            # the receiver being truly past the last outfield line + a passable lane.
+            line_ax = _last_outfield_line_ax(v)
+            behind_opts = [o for o in opts
+                           if _upfield(v, o["x"]) > line_ax
+                           and o["success"] > COUNTER_THROUGH_MIN_SUCCESS]
+            if behind_opts:
+                pool = list({o["pid"]: o for o in (pool + behind_opts)}.values())
         if pool:
             # anti-exploitation: mix near-equal buildup passes by COMPOSITE possession
             # EV (success + forwardness + receiver shot - risk), not raw success alone.
@@ -1157,8 +1202,11 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
             def _pass_ev(o):
                 s = shot_by_pid.get(o["pid"])
                 shot_bonus = s["prob"] if (s and _shot_is_real_chance(v, o["x"], o["y"], s)) else 0.0
-                return (0.6 * o["success"] + 0.5 * (_forwardness(v, o["x"]) / FIELD_X)
-                        + 0.4 * shot_bonus - 0.3 * o["risk"])
+                ev = (0.6 * o["success"] + 0.5 * (_forwardness(v, o["x"]) / FIELD_X)
+                      + 0.4 * shot_bonus - 0.3 * o["risk"])
+                if line_ax is not None and _upfield(v, o["x"]) > line_ax:
+                    ev += THROUGHBALL_EV_WEIGHT * o["success"]   # lever B: in-behind reward
+                return ev
 
             seed = _seed_int("pass", _ball_cell(v), tuple(sorted(o["pid"] for o in pool)))
             o = _near_optimal_pick(pool, _pass_ev, 0.10, seed)
