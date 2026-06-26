@@ -1,8 +1,10 @@
 """
-Championship AI player DEF — controls player 1. ZERO-LLM: the per-tick
+Championship AI player DEF — controls player 1. TWO-TIMESCALE: the per-tick
 decision is the deterministic champion policy (policy_v2), decided in code in
-microseconds. No model round-trip. The runtime contract is a JSON LIST of one
-command for our player.
+microseconds with NO model round-trip on the critical path. A daemon slow loop
+(hybrid, ~8s period) calls Sonnet OFF the hot path to set only the `recover` balance
+dial; on any failure the per-tick policy is byte-identical to the deterministic
+baseline. The runtime contract is a JSON LIST of one command for our player.
 """
 import os, sys, json, time, asyncio
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
@@ -12,6 +14,10 @@ try:
     import selector as S
 except Exception:
     S = None
+try:
+    import hybrid as H   # two-timescale BALANCE adapter (sets the `recover` dial off the critical path)
+except Exception:
+    H = None
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 app = BedrockAgentCoreApp()
@@ -22,7 +28,7 @@ POSITION_LABEL = "DEF"
 # removed for latency); flip True for an explicit ShotCalib data-collection run.
 # Even when ON, ONLY the GK process (pid 0) logs the full-pitch FCTICK; each agent
 # logs only its own FCSHOOT. Keeps the hot path clean.
-FCTICK_ENABLED = False
+FCTICK_ENABLED = True  # TEMP (2026-06-25 data-collection): GK-only tick capture for powered baseline + shot calibration; revert before tournament
 # A/B override: set to a playbook NAME to FORCE it every tick (isolates a playbook's
 # effect, bypassing the classifier). None -> normal selector. Shipped config: None.
 FORCE_PLAYBOOK = None
@@ -137,6 +143,17 @@ async def invoke(payload, context):
     team_id = int(data.get("teamId", 0) or 0)
     my_players = data.get("myPlayers") or [MY_PLAYER_ID]
     pid = my_players[0] if my_players else MY_PLAYER_ID
+    # TWO-TIMESCALE HYBRID: feed the rolling opponent window every tick (cheap, O(players)) and
+    # idempotently start the Sonnet slow loop that sets the `recover` balance dial. The Bedrock call
+    # runs in a daemon thread OFF this critical path, so per-tick latency stays microseconds. Both are
+    # best-effort; any failure -> current_tactics() returns NEUTRAL == the deterministic baseline.
+    # No-op unless hybrid.HYBRID_ENABLED is True.
+    if H is not None:
+        try:
+            H.observe(game_state, team_id)
+            H.start_slow_loop(team_id, POSITION_LABEL)
+        except Exception:
+            pass
     # OPPONENT-REACTIVE PLAYBOOK SELECT: a PURE function of the SHARED gameState, so
     # all 5 (separate-process) agents independently compute the IDENTICAL playbook.
     # No Bedrock, no per-process memory. Counters ship DISABLED -> always "DEFAULT".

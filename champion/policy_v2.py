@@ -322,11 +322,13 @@ RECOVERY_BALL_DEPTH = 0.15         # frac FIELD_X: ball must be this far into OU
 MARK_AS_MOVE_COVER = False
 
 
-def _mark_cmd(v: "View", opp: dict, tightness: str, reason: str):
+def _mark_cmd(v: "View", opp: dict, tightness: str, reason: str, force_cover: bool = False):
     """Emit a marking command. MARK is a confirmed no-op in this engine (breakdown MARK=0), so under
-    MARK_AS_MOVE_COVER we instead MOVE_TO a point just goal-side of the attacker, in the lane to our
-    goal centre — physically getting between the man and our goal with a command that executes."""
-    if MARK_AS_MOVE_COVER:
+    MARK_AS_MOVE_COVER (or force_cover, set by the LLM-driven recovery) we instead MOVE_TO a point just
+    goal-side of the attacker, in the lane to our goal centre — physically getting between the man and
+    our goal with a command that executes. force_cover guarantees the LLM recovery is a real MOVE even
+    when the global MARK_AS_MOVE_COVER flag is OFF (otherwise the recovery would be a silent no-op)."""
+    if MARK_AS_MOVE_COVER or force_cover:
         ox, oy = _field_xy(opp)
         cx = ox - v.dir * _sx(0.12)     # goal-side of the attacker (our goal is in the -v.dir direction)
         cy = oy * 0.80                  # bias toward goal centre to sit in the shot lane
@@ -357,13 +359,15 @@ _STATE = {
     "playbook": None,            # active playbook NAME committed by the selector (None -> DEFAULT)
 }
 
-NEUTRAL_TACTICS = {"attack_zone": None, "push": 0.0, "exploit_opp_id": None, "tempo": "direct", "notes": ""}
+NEUTRAL_TACTICS = {"attack_zone": None, "push": 0.0, "exploit_opp_id": None, "tempo": "direct", "recover": 0.0, "notes": ""}
 
 
-# Legacy LLM-tactics seam. OFF in production (proxy verdict 2026-06-25: pure deterministic).
-# When False, the per-tick DEFAULT path does NOT import the dormant hybrid module at all
-# (Codex gate fix) -> returns neutral directly, behavior byte-identical to before.
-_HYBRID_TACTICS_ENABLED = False
+# LLM-tactics seam. ON 2026-06-26 (operator decision A): the two-timescale hybrid shapes the
+# attack/DEFENCE BALANCE off the critical path. Per-tick stays deterministic (microseconds, well
+# inside the <500ms budget); the Sonnet slow loop only sets `recover` (0..1), the dynamic gate on
+# the forward goal-side recovery. Fail-safe: on any hybrid failure current_tactics() returns NEUTRAL
+# (recover=0.0) == byte-identical to the proven attack-always baseline.
+_HYBRID_TACTICS_ENABLED = True
 
 
 def _current_tactics_safe() -> dict:
@@ -388,6 +392,18 @@ def _tactic_push_ax(t: dict) -> float:
 
 def _tactic_tempo(t: dict) -> str:
     return "patient" if (t or {}).get("tempo") == "patient" else "direct"
+
+
+def _tactic_recover(t: dict) -> float:
+    """LLM balance dial (0..1): how strongly a spare forward recovers goal-side when we are pinned
+    deep. 0.0 == pure attack-always baseline. Clamped; non-finite/garbage -> 0.0 (fail to attack)."""
+    try:
+        recover = float((t or {}).get("recover", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(recover):
+        return 0.0
+    return max(0.0, min(1.0, recover))
 
 
 def _tactic_zone_target_y(t: dict):
@@ -1360,8 +1376,15 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
     #     live diagnosis). MARK is positioning, so the single-presser anti-swarm invariant
     #     holds; it fires ONLY under real deep threat, so attack-always is unchanged when we
     #     are not deep-defending. Forwards take DISTINCT uncovered intruders (no double-mark).
-    if (RECOVERY_DEF_ENABLED and _is_fwd(slot) and not v.we_have_ball and not tired
-            and _upfield(v, v.ball_xy[0]) < -_sx(RECOVERY_BALL_DEPTH)):
+    # The gate is now DYNAMIC: the LLM slow loop sets `recover` (0..1) per opponent. recover>0 lets a
+    # spare striker drop goal-side ONLY against opponents that actually flood our third; recover scales
+    # the depth threshold (higher recover -> recover SOONER). recover==0 -> never fires == attack-always
+    # baseline. The static RECOVERY_DEF_ENABLED flag still forces it on (offline / no-LLM testing).
+    _recover = _tactic_recover(t)
+    _recover_on = RECOVERY_DEF_ENABLED or _recover > 0.15
+    _recover_depth = RECOVERY_BALL_DEPTH * (1.0 - 0.6 * _recover)   # recover=1 -> 0.06; recover=0.15 -> ~0.137
+    if (_recover_on and _is_fwd(slot) and not v.we_have_ball and not tired
+            and _upfield(v, v.ball_xy[0]) < -_sx(_recover_depth)):
         _cpid = _carrier_pid(v)
         _pressed = _carrier_will_be_pressed(v, team_id, formation, pb)
         intruders = _intruders(v, deprioritize_pid=_cpid, exclude_pid=(_cpid if _pressed else None))
@@ -1373,7 +1396,7 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
             fwds = _our_fwd_pids(v, my_id, formation)
             fidx = fwds.index(my_id) if my_id in fwds else 0
             if fidx < len(uncovered):
-                return _mark_cmd(v, uncovered[fidx], "TIGHT", "FWD recover-mark free man")
+                return _mark_cmd(v, uncovered[fidx], "TIGHT", "FWD recover-cover free man", force_cover=True)
 
     # 3) hold shape: recover to anchor (with attacking push if we possess)
     if v.we_have_ball:

@@ -25,28 +25,43 @@ REGION = "us-east-1"
 # policy on every testable opponent (agg 4/4 -> 1/3, defensive 4-0/6-0 -> 0-0) by perturbing
 # a near-optimal policy. The code stays as a flag-gated lever: flip to True to re-enable the
 # Sonnet adaptation as a tournament hedge vs genuinely ADAPTING expert opponents.
-HYBRID_ENABLED = False
-NEUTRAL = {"attack_zone": None, "push": 0.0, "exploit_opp_id": None, "tempo": "direct", "notes": ""}
+# 2026-06-26 (operator decision A): re-enabled as the BALANCE adapter. The per-tick policy stays
+# deterministic (no Bedrock on the critical path -> no <500ms latency-budget violation that sank
+# pure-LLM, which averaged 845ms/tick and went 2W-4L vs aggressive). This slow loop only shapes the
+# attack/DEFENCE BALANCE every ~8s: its one new lever is `recover` (0..1), the dynamic gate on the
+# forward goal-side recovery that the STATIC deterministic RECOVERY_DEF could not aim per-opponent.
+HYBRID_ENABLED = True
+NEUTRAL = {"attack_zone": None, "push": 0.0, "exploit_opp_id": None, "tempo": "direct", "recover": 0.0, "notes": ""}
 
-ALLOWED_KEYS = {"attack_zone", "push", "exploit_opp_id", "tempo", "notes"}
+# BALANCE-ONLY experiment (operator decision A, 2026-06-26): the prompt asks the LLM for ONLY `recover`.
+# The prior hybrid let it shape ATTACK (push/attack_zone/exploit) and that perturbed a near-optimal attack
+# policy DOWN (1/3 vs aggressive); we steer it to move ONLY the attack/defence balance dial. The attack
+# keys remain VALID in the schema (dormant machinery + its contract tests stay intact) but the system
+# prompt requests recover-only, so attack stays the proven deterministic baseline in practice.
+ALLOWED_KEYS = {"attack_zone", "push", "exploit_opp_id", "tempo", "recover", "notes"}
 FORBIDDEN_KEYS = {
     "attack_side", "danger_opp_id", "press_level", "danger_mark", "mark",
     "mark_id", "drop", "drop_deeper", "sit_deeper", "defend", "defense",
 }
 
 BASE_PERSONA = (
-    "You are an ELITE, RELENTLESSLY ATTACKING 5-a-side football manager. "
-    "This is a 2-MINUTE SPRINT: sitting on a lead LOSES because the equalizer always comes. "
-    "You ALWAYS attack. You NEVER advise defending, sitting deeper, parking, or pressing-to-protect. "
-    "Your ONLY job is to make THIS player create and score MORE. "
-    "Be decisive and aggressive."
+    "You are an ELITE 5-a-side football manager in a 2-MINUTE SPRINT. Your DEFAULT is relentless attack: "
+    "create and score, because sitting on a lead loses when the equalizer comes. "
+    "But you are NOT naive. Your team plays an all-out 1-1-2: when the opponent FLOODS our defensive third, "
+    "a striker is often the only player who can drop GOAL-SIDE to cover a free shooter in front of our goal — "
+    "otherwise we concede on every break (this is why pure attackers coin-flip aggressive opponents). "
+    "Your job is to set the per-opponent BALANCE via the single `recover` dial (0.0 = pure attack, "
+    "1.0 = a spare striker always recovers goal-side the moment we are pinned deep). Read the numeric summary: "
+    "high 'per-opponent ticks in our defensive third' and an 'opponent mean attack x' deep toward our goal mean "
+    "THIS opponent floods -> raise `recover`. If they rarely reach our third, keep `recover` low and ATTACK. "
+    "Spend no more recovery than the opponent forces; over-recovering kills our scoring."
 )
 
 ROLE_FLAVOR = {
-    "FWD1": "THIS player is a ruthless poacher: gamble on the last shoulder, attack in behind, get shots off fast.",
-    "FWD2": "THIS player is a ruthless poacher: gamble on the last shoulder, attack in behind, get shots off fast.",
-    "MID": "THIS player is a press-resistant creator: drive forward, slip throughballs, arrive late in the box.",
-    "DEF": "THIS player is an aggressive ball-winner who springs the counter INSTANTLY and steps up; never parks.",
+    "FWD1": "THIS striker is a ruthless poacher who attacks in behind FIRST, but is the designated spare who recovers goal-side when we are pinned deep and a shooter is free.",
+    "FWD2": "THIS striker is a ruthless poacher who attacks in behind FIRST, but is the designated spare who recovers goal-side when we are pinned deep and a shooter is free.",
+    "MID": "THIS player is a press-resistant creator: drive forward, slip throughballs, arrive late in the box; track back only when overrun.",
+    "DEF": "THIS player is an aggressive ball-winner who springs the counter, but is our last line — stay goal-side under a flood.",
     "GK": "THIS player is a fast-launch goalkeeper: distribute forward immediately to start attacks.",
 }
 
@@ -209,6 +224,14 @@ def _validate_tactics(obj) -> dict:
             out["tempo"] = obj.get("tempo")
         else:
             return dict(NEUTRAL)
+    if "recover" in obj:
+        try:
+            recover = float(obj.get("recover"))
+        except (TypeError, ValueError):
+            return dict(NEUTRAL)
+        if not math.isfinite(recover) or recover < 0.0 or recover > 1.0:
+            return dict(NEUTRAL)
+        out["recover"] = recover
     notes = obj.get("notes")
     if isinstance(notes, str):
         out["notes"] = notes[:180]
@@ -304,13 +327,14 @@ def _system_prompt(position_label: str) -> str:
     return (
         f"{BASE_PERSONA}\n"
         f"{_role_flavor(position_label)}\n"
-        "Output ONLY one JSON object for THIS player. All fields are optional and omitted fields are neutral. "
-        "Allowed schema: {\"attack_zone\":\"L\"|\"C\"|\"R\", \"push\":0.0..1.0, "
-        "\"exploit_opp_id\":0..4|null, \"tempo\":\"direct\"|\"patient\", \"notes\":\"short text\"}. "
-        "attack_zone means the channel THIS player should attack. push only ADDS forward commitment. "
-        "exploit_opp_id means an opponent to attack PAST or behind, never to mark. "
-        "FORBIDDEN: defending, sitting deeper, parking, pressing to protect, marking, press_level, danger_mark, "
-        "danger_opp_id, or any field/action that reduces attack."
+        "Output ONLY one JSON object with EXACTLY this schema: {\"recover\":0.0..1.0, \"notes\":\"short text\"}. "
+        "Your attack is already handled by a proven engine — your ONLY decision is the balance dial `recover`. "
+        "recover=0.0 = pure attack (default). Raise it toward 1.0 ONLY when the numeric summary shows THIS "
+        "opponent floods our defensive third (high 'per-opponent ticks in our defensive third' and an "
+        "'opponent mean attack x' deep toward our goal), so a spare striker drops goal-side to cover the free "
+        "shooter that otherwise scores on the break. If they rarely reach our third, keep recover=0 and let the "
+        "team attack. Spend no more recovery than the flood forces; over-recovering kills our scoring. "
+        "Output NO other keys — attack_zone, push, mark, press, etc. are all rejected."
     )
 
 

@@ -275,19 +275,99 @@ COUNTER_FWD_RUN_AX = 0.62          # in-behind run depth: attacking-frame fracti
 COUNTER_FWD_RUN_AY = 0.32          # channel split width (frac FIELD_Z); FWD1 left, FWD2 right
 COUNTER_CARRY_STEP = 0.30          # sprint-carry step (frac FIELD_X) when no in-behind runner exists yet
 
+# --------------------------------------------------------------------------- #
+# SUSTAINED-POSSESSION CREATION levers (2026-06-26). The counter above fires    #
+# only on a DEEP TURNOVER (ball in our half); these attack the OTHER, untested  #
+# cap: during sustained final-third possession the spare FWD's run sits ~0.64u   #
+# IN FRONT of the opp last line, so the forward ball lands loose with no runner  #
+# truly in behind (live in-behind only 0-18%). Powered baseline (12 aggressive   #
+# matches, a742108) measured the symptom: us:opp shot volume = 0.54 — we get     #
+# HALF the shots and survive only on finishing (57% vs 35%). Lever A pushes the   #
+# run BEYOND the last outfield line; lever B considers + rewards the through-ball #
+# to a runner genuinely in behind. Each is default-OFF and OFF = byte-identical   #
+# to the shipped build; promote only on a powered A/B vs the baseline above.      #
+# --------------------------------------------------------------------------- #
+INBEHIND_RUN_ENABLED = False       # lever A: FWD final-third run target goes BEYOND the last outfield line
+THROUGHBALL_EV_ENABLED = False     # lever B: surface + EV-reward a through-ball to a runner in behind
+THROUGHBALL_EV_WEIGHT = 0.5        # EV weight on an in-behind receiver (only used when lever B is ON)
+
+# TACKLE-EVASION dribble (2026-06-26, from observing strong teams: they dribble AROUND tacklers,
+# not into them). Live possession analysis showed 48% of our possessions end in a LOSS (23% to the
+# opponent + 25% to a loose ball) — we carry straight at goal into the nearest defender. When the
+# closest opponent is in tackle range AND ahead of the carrier, steer the carry to the OPEN side
+# (around the defender) while keeping forward progress. Cutting turnovers helps creation (keep the
+# ball) AND defence (opp gets it less). Flag-gated, default-OFF; OFF = byte-identical.
+DRIBBLE_EVADE_ENABLED = False
+EVADE_TRIGGER_DIST = 0.22          # frac FIELD_X: nearest opp within this (~tackle range) -> evade
+EVADE_LATERAL = 0.22               # frac FIELD_Z: lateral step to the open side around the defender
+EVADE_FORWARD = 0.16               # frac FIELD_X: forward progress kept while veering (< the 0.22 straight)
+
+# RECOVERY DEFENCE (2026-06-26, the STRUCTURAL lever from live FCTICK diagnosis). When the opponent
+# attacks our defensive third, only ~1.08 of our 4 outfielders are goal-side of the ball and 34% of
+# those ticks have an attacker behind our ENTIRE line (a free shooter) — because attack-always 1-1-2
+# never recovers its forwards. This is WHY aggressive (which floods that space) coin-flips us while
+# balanced/defensive (which don't) get shut out 4-0/6-0. RECOVERY_DEF: when the ball is deep in our
+# half AND an attacker is uncovered (DEF + dropping MID exhausted), the nearest spare FORWARD recovers
+# GOAL-SIDE to MARK the free man. MARK = positioning (anti-swarm single-presser preserved); fires only
+# under real deep threat so attack-always holds otherwise. Flag-gated, default-OFF; OFF = byte-identical.
+RECOVERY_DEF_ENABLED = False
+RECOVERY_BALL_DEPTH = 0.15         # frac FIELD_X: ball must be this far into OUR half (attacking-frame) to recover
+
+# MARK-AS-MOVE-COVER (2026-06-26, CONFIRMED ROOT: the engine command breakdown shows MARK=0 across every
+# match despite DEF/drop-mark/recovery emitting MARK constantly — MARK is a NO-OP in this engine, so our
+# entire marking defence is fiction (the "marker" just idles -> 34% open shooter, concede unmoved). Only
+# MOVE_TO and PRESS_BALL actually execute. This flag converts every MARK into a MOVE_TO the cover point
+# (goal-side of the attacker, in the lane to our goal centre) so defenders PHYSICALLY get between the man
+# and our goal with a command that executes. Flag-gated, default-OFF; OFF = byte-identical (still MARK).
+MARK_AS_MOVE_COVER = False
+
+
+def _mark_cmd(v: "View", opp: dict, tightness: str, reason: str, force_cover: bool = False):
+    """Emit a marking command. MARK is a confirmed no-op in this engine (breakdown MARK=0), so under
+    MARK_AS_MOVE_COVER (or force_cover, set by the LLM-driven recovery) we instead MOVE_TO a point just
+    goal-side of the attacker, in the lane to our goal centre — physically getting between the man and
+    our goal with a command that executes. force_cover guarantees the LLM recovery is a real MOVE even
+    when the global MARK_AS_MOVE_COVER flag is OFF (otherwise the recovery would be a silent no-op)."""
+    if MARK_AS_MOVE_COVER or force_cover:
+        ox, oy = _field_xy(opp)
+        cx = ox - v.dir * _sx(0.12)     # goal-side of the attacker (our goal is in the -v.dir direction)
+        cy = oy * 0.80                  # bias toward goal centre to sit in the shot lane
+        return _move(cx, cy, True, "cover " + reason)
+    return Cmd("MARK", {"target_player_id": _pid(opp), "tightness": tightness}, 3, reason)
+
+
+def _evade_carry(v: "View", tx: float, ty: float) -> tuple:
+    """Steer the carry AROUND the nearest tackler instead of straight into it. If the closest
+    opponent is within tackle range AND ahead of the carrier toward goal, veer to the open side
+    (opposite the defender's y) while keeping forward progress. Pure geometry, no opponent label."""
+    if not v.opponents:
+        return tx, ty
+    ox, oy = min((_field_xy(o) for o in v.opponents),
+                 key=lambda p: _hypot(v.me_xy[0], v.me_xy[1], p[0], p[1]))
+    if _hypot(v.me_xy[0], v.me_xy[1], ox, oy) > _sx(EVADE_TRIGGER_DIST):
+        return tx, ty
+    if (ox - v.me_xy[0]) * v.dir <= -_sx(0.05):       # defender is behind us -> no need to evade
+        return tx, ty
+    side = 1.0 if oy <= v.me_xy[1] else -1.0          # veer to the side opposite the defender
+    ny = max(-FIELD_Z * 0.95, min(FIELD_Z * 0.95, v.me_xy[1] + side * _sz(EVADE_LATERAL)))
+    nx = v.me_xy[0] + v.dir * _sx(EVADE_FORWARD)
+    return nx, ny
+
 
 _STATE = {
     "press": {},                 # team_id -> {"t": gameTime, "ema": high-press score}
     "playbook": None,            # active playbook NAME committed by the selector (None -> DEFAULT)
 }
 
-NEUTRAL_TACTICS = {"attack_zone": None, "push": 0.0, "exploit_opp_id": None, "tempo": "direct", "notes": ""}
+NEUTRAL_TACTICS = {"attack_zone": None, "push": 0.0, "exploit_opp_id": None, "tempo": "direct", "recover": 0.0, "notes": ""}
 
 
-# Legacy LLM-tactics seam. OFF in production (proxy verdict 2026-06-25: pure deterministic).
-# When False, the per-tick DEFAULT path does NOT import the dormant hybrid module at all
-# (Codex gate fix) -> returns neutral directly, behavior byte-identical to before.
-_HYBRID_TACTICS_ENABLED = False
+# LLM-tactics seam. ON 2026-06-26 (operator decision A): the two-timescale hybrid shapes the
+# attack/DEFENCE BALANCE off the critical path. Per-tick stays deterministic (microseconds, well
+# inside the <500ms budget); the Sonnet slow loop only sets `recover` (0..1), the dynamic gate on
+# the forward goal-side recovery. Fail-safe: on any hybrid failure current_tactics() returns NEUTRAL
+# (recover=0.0) == byte-identical to the proven attack-always baseline.
+_HYBRID_TACTICS_ENABLED = True
 
 
 def _current_tactics_safe() -> dict:
@@ -312,6 +392,18 @@ def _tactic_push_ax(t: dict) -> float:
 
 def _tactic_tempo(t: dict) -> str:
     return "patient" if (t or {}).get("tempo") == "patient" else "direct"
+
+
+def _tactic_recover(t: dict) -> float:
+    """LLM balance dial (0..1): how strongly a spare forward recovers goal-side when we are pinned
+    deep. 0.0 == pure attack-always baseline. Clamped; non-finite/garbage -> 0.0 (fail to attack)."""
+    try:
+        recover = float((t or {}).get("recover", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(recover):
+        return 0.0
+    return max(0.0, min(1.0, recover))
 
 
 def _tactic_zone_target_y(t: dict):
@@ -650,6 +742,15 @@ def _upfield(v: View, x: float) -> float:
     return x * v.dir
 
 
+def _last_outfield_line_ax(v: View) -> float:
+    """Attacking-frame x of the opponent's LAST outfield defender (their GK = pid 0
+    excluded). + = closer to the opp goal; a runner/receiver with _upfield > this is
+    genuinely IN BEHIND the last line. Falls back to midfield (0.0) if no outfield
+    opponent is visible. Pure function of the shared gameState (team-coherent)."""
+    axs = [_upfield(v, _field_xy(o)[0]) for o in v.opponents if _pid(o) != 0]
+    return max(axs) if axs else 0.0
+
+
 def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
 
@@ -791,7 +892,16 @@ def _support_run(v: View, slot: int, my_id: int, holder: dict | None,
             return hx + v.dir * _sx(0.38), side * _sz(0.30), True, "press in-behind outlet"
         if final_third:
             far_side = (-1 if hy > 0 else 1) if carrier_is_fwd else side
-            return v.opp_goal_x - v.dir * _sx(0.10), far_side * GOAL_HALF_WIDTH * 0.75, True, "attack box outlet"
+            tx = v.opp_goal_x - v.dir * _sx(0.10)
+            if INBEHIND_RUN_ENABLED:
+                # Lever A: run BEYOND the opp last outfield line (capped just short of
+                # the goal line), not the fixed spot 0.64u in front of it. MONOTONE:
+                # never shallower than the old target, so in-behind% can only rise.
+                line_ax = _last_outfield_line_ax(v)
+                cap_ax = _upfield(v, v.opp_goal_x) - _sx(0.03)
+                tgt_ax = min(cap_ax, max(line_ax + _sx(0.08), _upfield(v, tx)))
+                tx = tgt_ax * v.dir
+            return tx, far_side * GOAL_HALF_WIDTH * 0.75, True, "attack box outlet"
         return hx + v.dir * _sx(0.24), side * _sz(0.24), True, "stretch forward outlet"
     return None
 
@@ -1003,6 +1113,15 @@ def _our_mid_pids(v: View, my_id: int, formation: str | None) -> list:
     return sorted(set(pids))
 
 
+def _our_fwd_pids(v: View, my_id: int, formation: str | None) -> list:
+    """Our forwards' player ids, sorted — so two forwards RECOVERING on defence cover
+    DISTINCT uncovered attackers (no double-mark; the anti-swarm invariant is preserved
+    because recovery is MARK/positioning, not a press)."""
+    pids = [my_id] if _is_fwd(role_for_player(my_id, formation)) else []
+    pids += [_pid(t) for t in v.teammates if _is_fwd(role_for_player(_pid(t), formation))]
+    return sorted(set(pids))
+
+
 # --------------------------------------------------------------------------- #
 # Core per-tick decision                                                      #
 # --------------------------------------------------------------------------- #
@@ -1149,6 +1268,17 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
         if tactic_tempo == "patient":
             safe_opts = [o for o in opts if o["success"] > 0.72 and _forwardness(v, o["x"]) >= -_sx(0.03)]
         pool = fwd_opts or safe_opts or [o for o in opts if o["success"] > 0.64]
+        line_ax = None
+        if THROUGHBALL_EV_ENABLED:
+            # Lever B: SURFACE a genuine in-behind through-ball into the pool (it may
+            # fall below the fwd_opts success floor), then EV-reward it below. Gated on
+            # the receiver being truly past the last outfield line + a passable lane.
+            line_ax = _last_outfield_line_ax(v)
+            behind_opts = [o for o in opts
+                           if _upfield(v, o["x"]) > line_ax
+                           and o["success"] > COUNTER_THROUGH_MIN_SUCCESS]
+            if behind_opts:
+                pool = list({o["pid"]: o for o in (pool + behind_opts)}.values())
         if pool:
             # anti-exploitation: mix near-equal buildup passes by COMPOSITE possession
             # EV (success + forwardness + receiver shot - risk), not raw success alone.
@@ -1157,14 +1287,19 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
             def _pass_ev(o):
                 s = shot_by_pid.get(o["pid"])
                 shot_bonus = s["prob"] if (s and _shot_is_real_chance(v, o["x"], o["y"], s)) else 0.0
-                return (0.6 * o["success"] + 0.5 * (_forwardness(v, o["x"]) / FIELD_X)
-                        + 0.4 * shot_bonus - 0.3 * o["risk"])
+                ev = (0.6 * o["success"] + 0.5 * (_forwardness(v, o["x"]) / FIELD_X)
+                      + 0.4 * shot_bonus - 0.3 * o["risk"])
+                if line_ax is not None and _upfield(v, o["x"]) > line_ax:
+                    ev += THROUGHBALL_EV_WEIGHT * o["success"]   # lever B: in-behind reward
+                return ev
 
             seed = _seed_int("pass", _ball_cell(v), tuple(sorted(o["pid"] for o in pool)))
             o = _near_optimal_pick(pool, _pass_ev, 0.10, seed)
             return Cmd("PASS", {"target_player_id": o["pid"], "type": o["type"]}, 0, f"pass->{o['pid']} s={round(o['success'],2)}")
-        # no good pass -> carry toward goal
+        # no good pass -> carry toward goal (evade the nearest tackler if one is in our path)
         tx, ty = _apply_attack_tactics(v, v.me_xy[0] + v.dir * _sx(0.22), v.me_xy[1] * 0.7, t)
+        if DRIBBLE_EVADE_ENABLED:
+            tx, ty = _evade_carry(v, tx, ty)
         return _move(tx, ty, True, "dribble toward goal")
 
     # ===================== OFF THE BALL ================================= #
@@ -1204,7 +1339,7 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
             defs = _our_defender_pids(v, my_id, formation)
             idx = defs.index(my_id) if my_id in defs else 0
             if idx < len(intruders):
-                return Cmd("MARK", {"target_player_id": _pid(intruders[idx]), "tightness": "TIGHT"}, 3, "DEF mark danger")
+                return _mark_cmd(v, intruders[idx], "TIGHT", "DEF mark danger")
         # else hold the deep anchor (the shape recovery below handles it). The earlier
         # "counter-screen" MOVE was REMOVED: it made DEF chase/drop and contributed to
         # the 203-PRESS swarm that got countered 1-3.
@@ -1233,7 +1368,35 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
         # In 1-1-2 (1 def, 1 mid) this is intruders[1] -> unchanged behavior.
         target_idx = num_def + my_mid_idx
         if target_idx < len(intruders):
-            return Cmd("MARK", {"target_player_id": _pid(intruders[target_idx]), "tightness": "NORMAL"}, 3, "MID drop-mark spare striker")
+            return _mark_cmd(v, intruders[target_idx], "NORMAL", "MID drop-mark spare striker")
+
+    # 2c) RECOVERY DEFENCE: when the opponent attacks deep into our half and an attacker
+    #     is left UNCOVERED (DEF + dropping MID exhausted), the nearest spare FORWARD
+    #     recovers GOAL-SIDE to MARK the free man (the 34%-of-attacks open shooter from the
+    #     live diagnosis). MARK is positioning, so the single-presser anti-swarm invariant
+    #     holds; it fires ONLY under real deep threat, so attack-always is unchanged when we
+    #     are not deep-defending. Forwards take DISTINCT uncovered intruders (no double-mark).
+    # The gate is now DYNAMIC: the LLM slow loop sets `recover` (0..1) per opponent. recover>0 lets a
+    # spare striker drop goal-side ONLY against opponents that actually flood our third; recover scales
+    # the depth threshold (higher recover -> recover SOONER). recover==0 -> never fires == attack-always
+    # baseline. The static RECOVERY_DEF_ENABLED flag still forces it on (offline / no-LLM testing).
+    _recover = _tactic_recover(t)
+    _recover_on = RECOVERY_DEF_ENABLED or _recover > 0.15
+    _recover_depth = RECOVERY_BALL_DEPTH * (1.0 - 0.6 * _recover)   # recover=1 -> 0.06; recover=0.15 -> ~0.137
+    if (_recover_on and _is_fwd(slot) and not v.we_have_ball and not tired
+            and _upfield(v, v.ball_xy[0]) < -_sx(_recover_depth)):
+        _cpid = _carrier_pid(v)
+        _pressed = _carrier_will_be_pressed(v, team_id, formation, pb)
+        intruders = _intruders(v, deprioritize_pid=_cpid, exclude_pid=(_cpid if _pressed else None))
+        covered = len(_our_defender_pids(v, my_id, formation))
+        if DROP_MARK_ENABLED:
+            covered += len(_our_mid_pids(v, my_id, formation))
+        uncovered = intruders[covered:]
+        if uncovered:
+            fwds = _our_fwd_pids(v, my_id, formation)
+            fidx = fwds.index(my_id) if my_id in fwds else 0
+            if fidx < len(uncovered):
+                return _mark_cmd(v, uncovered[fidx], "TIGHT", "FWD recover-cover free man", force_cover=True)
 
     # 3) hold shape: recover to anchor (with attacking push if we possess)
     if v.we_have_ball:

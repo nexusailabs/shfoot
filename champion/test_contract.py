@@ -339,7 +339,12 @@ def test_current_tactics_neutral_and_off_schema():
     _clear_runtime_state()
     assert hybrid.current_tactics() == hybrid.NEUTRAL
     _set_tactics({"attack_zone": "L", "push": 0.7, "exploit_opp_id": "2", "tempo": "patient", "notes": "go"})
-    assert hybrid.current_tactics() == {"attack_zone": "L", "push": 0.7, "exploit_opp_id": 2, "tempo": "patient", "notes": "go"}
+    assert hybrid.current_tactics() == {"attack_zone": "L", "push": 0.7, "exploit_opp_id": 2, "tempo": "patient", "recover": 0.0, "notes": "go"}
+    # `recover` (the balance dial) is accepted in [0,1] and rejected/neutralized otherwise.
+    _set_tactics({"recover": 0.8})
+    assert hybrid.current_tactics() == {"attack_zone": None, "push": 0.0, "exploit_opp_id": None, "tempo": "direct", "recover": 0.8, "notes": ""}
+    _set_tactics({"recover": 1.5})
+    assert hybrid.current_tactics() == hybrid.NEUTRAL
     _set_tactics({"attack_side": "C", "danger_opp_id": 2, "press_level": "high"})
     assert hybrid.current_tactics() == hybrid.NEUTRAL
     _set_tactics({"attack_zone": "wide", "push": 0.5})
@@ -354,6 +359,32 @@ def test_current_tactics_neutral_and_off_schema():
     assert hybrid.current_tactics() == hybrid.NEUTRAL
     _clear_runtime_state()
     print("OK current_tactics neutralizes none/off-schema/stale")
+
+
+def test_llm_recover_balance_lever():
+    """The LLM `recover` dial (2026-06-26) is the dynamic gate on forward goal-side recovery.
+    recover==0 -> attack-always baseline (forwards never drop, the FINDINGS #3 free-shooter hole).
+    recover>0.15 under a deep flood -> exactly one spare forward emits a REAL goal-side MOVE_TO cover
+    (not the no-op MARK), the other stays forward (single-coverage discipline preserved)."""
+    _clear_runtime_state()
+    # HOME (team 0) attacks +x, defends near x=-6.4. Opponent floods our third (3 attackers at x<0).
+    home_pos = {0: (-6.0, 0.0), 1: (-3.5, 0.0), 2: (-1.0, 0.3), 3: (4.5, -0.8), 4: (4.5, 0.8)}
+    away_pos = {0: (6.0, 0.0), 1: (-4.6, 0.4), 2: (-4.2, -1.1), 3: (-4.0, 1.3), 4: (2.0, 0.0)}
+    gs = _state((-4.7, 0.4), poss_aid="agentId_1", poss_team="away", home_pos=home_pos, away_pos=away_pos)
+
+    _set_tactics({"recover": 0.0})
+    base = {pid: P.command(gs, 0, pid) for pid in (3, 4)}
+    assert all(c["commandType"] != "MOVE_TO" or (c["parameters"].get("target_x") or 0) > -4.0
+               for c in base.values()), f"recover=0 must not drop a forward goal-side: {base}"
+
+    _clear_runtime_state()
+    _set_tactics({"recover": 0.8})
+    rec = {pid: P.command(gs, 0, pid) for pid in (3, 4)}
+    covers = [pid for pid, c in rec.items()
+              if c["commandType"] == "MOVE_TO" and (c["parameters"].get("target_x") or 0) < -4.0]
+    assert len(covers) == 1, f"recover=0.8 must send exactly ONE spare forward goal-side, got {covers}: {rec}"
+    _clear_runtime_state()
+    print(f"OK LLM recover lever: recover=0 holds attack, recover=0.8 covers via goal-side MOVE (FWD{covers[0]})")
 
 
 def test_observe_never_raises_on_malformed_state():
@@ -772,6 +803,7 @@ if __name__ == "__main__":
     test_attack_tactics_never_reduce_forwardness()
     test_attack_tactics_preserve_coordination()
     test_current_tactics_neutral_and_off_schema()
+    test_llm_recover_balance_lever()
     test_observe_never_raises_on_malformed_state()
     # --- playbook + selector (team-coherent, gated, deterministic) ---
     test_default_playbook_byte_identical()
