@@ -156,8 +156,11 @@ def test_mid_drop_mark_second_striker():
                 away_pos={0: (6.4, 0), 1: (3.0, 0), 2: (0.0, 0.6),
                           3: (-4.0, 0.5), 4: (-3.6, -0.8)})
     c = P.command(gs, 0, 2)  # our MID (id2)
-    assert c["commandType"] == "MARK", f"MID should drop-mark the 2nd striker, got {c}"
-    print(f"OK MID drop-mark fires = {c['commandType']} -> {c['parameters'].get('target_player_id')}")
+    # MARK is a confirmed engine no-op, so a "mark" now executes as a goal-side MOVE-cover that
+    # still carries target_player_id (whom it covers). Accept either; the assignment must be present.
+    assert c["commandType"] in ("MARK", "MOVE_TO") and c["parameters"].get("target_player_id") is not None, \
+        f"MID should drop-cover the 2nd striker, got {c}"
+    print(f"OK MID drop-cover fires = {c['commandType']} -> {c['parameters'].get('target_player_id')}")
 
 
 def test_pressure_release_is_formation_aware():
@@ -186,7 +189,8 @@ def test_no_double_mark_multi_defender():
                           3: (-5.0, 0.5), 4: (-4.6, -0.6)})
     c1 = P.command(gs, 0, 1, "2-1-1")  # DEF
     c2 = P.command(gs, 0, 2, "2-1-1")  # DEF2
-    targets = [c["parameters"]["target_player_id"] for c in (c1, c2) if c["commandType"] == "MARK"]
+    targets = [c["parameters"]["target_player_id"] for c in (c1, c2)
+               if c["parameters"].get("target_player_id") is not None]
     assert len(set(targets)) == len(targets), f"defenders double-marked: {c1}, {c2}"
     print(f"OK no double-mark in 2-1-1 (DEF={c1['commandType']}, DEF2={c2['commandType']}, targets={targets})")
 
@@ -200,7 +204,7 @@ def test_no_double_team_lone_carrier():
     on_carrier = [
         pid for pid in range(5)
         if (c := P.command(gs, 0, pid))["parameters"].get("target_player_id") == 2
-        and c["commandType"] in ("MARK", "SLIDE_TACKLE", "PRESS_BALL")
+        and c["commandType"] in ("MARK", "SLIDE_TACKLE", "PRESS_BALL", "MOVE_TO")
     ]
     assert len(on_carrier) <= 1, f"double-team on lone carrier by players {on_carrier}"
     print(f"OK no double-team on lone carrier (committed players={on_carrier})")
@@ -215,7 +219,7 @@ def test_tired_presser_does_not_reserve_lone_carrier():
     on_carrier = [
         pid for pid in range(5)
         if (c := P.command(gs, 0, pid))["parameters"].get("target_player_id") == 2
-        and c["commandType"] in ("MARK", "SLIDE_TACKLE", "PRESS_BALL")
+        and c["commandType"] in ("MARK", "SLIDE_TACKLE", "PRESS_BALL", "MOVE_TO")
     ]
     assert len(on_carrier) == 1, f"gassed closest must not reserve; exactly one covers: {on_carrier}"
     print(f"OK tired presser doesn't reserve lone carrier (covered by {on_carrier})")
@@ -229,7 +233,7 @@ def _committed_to(gs, target):
         c = P.command(gs, 0, pid)
         if c["commandType"] == "PRESS_BALL":
             out.append(pid)
-        elif c["commandType"] in ("MARK", "SLIDE_TACKLE") and c["parameters"].get("target_player_id") == target:
+        elif c["commandType"] in ("MARK", "SLIDE_TACKLE", "MOVE_TO") and c["parameters"].get("target_player_id") == target:
             out.append(pid)
     return out
 
@@ -327,12 +331,13 @@ def test_attack_tactics_preserve_coordination():
                           3: (-5.0, 0.5), 4: (-4.6, -0.6)})
     cmds = [P.command(gs, 0, pid, "2-1-1") for pid in range(5)]
     pressers = [c for c in cmds if c["commandType"] in ("PRESS_BALL", "SLIDE_TACKLE")]
-    marks = [c for c in cmds if c["commandType"] == "MARK"]
-    targets = [c["parameters"]["target_player_id"] for c in marks]
+    # marks now render as goal-side MOVE-covers carrying target_player_id (MARK is a no-op)
+    covers = [c for c in cmds if c["parameters"].get("target_player_id") is not None]
+    targets = [c["parameters"]["target_player_id"] for c in covers]
     assert len(pressers) <= 1, cmds
     assert len(set(targets)) == len(targets), cmds
     _clear_runtime_state()
-    print(f"OK attack tactics preserve coordination (pressers={len(pressers)}, mark targets={targets})")
+    print(f"OK attack tactics preserve coordination (pressers={len(pressers)}, cover targets={targets})")
 
 
 def test_current_tactics_neutral_and_off_schema():
@@ -581,7 +586,8 @@ def _pressers_and_marks(gs, formation, playbook=None):
         c = P.command(gs, 0, pid, formation, playbook)
         if c["commandType"] in ("PRESS_BALL", "SLIDE_TACKLE"):
             pressers += 1
-        elif c["commandType"] == "MARK":
+        elif c["parameters"].get("target_player_id") is not None:
+            # MARK (no-op) is rendered as a goal-side MOVE-cover carrying target_player_id
             mark_targets.append(c["parameters"]["target_player_id"])
     return pressers, mark_targets
 

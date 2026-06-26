@@ -319,7 +319,12 @@ RECOVERY_BALL_DEPTH = 0.15         # frac FIELD_X: ball must be this far into OU
 # MOVE_TO and PRESS_BALL actually execute. This flag converts every MARK into a MOVE_TO the cover point
 # (goal-side of the attacker, in the lane to our goal centre) so defenders PHYSICALLY get between the man
 # and our goal with a command that executes. Flag-gated, default-OFF; OFF = byte-identical (still MARK).
-MARK_AS_MOVE_COVER = False
+# 2026-06-26 (operator decision: sharp deterministic off-ball play): ENABLED. Live-match replay through
+# this policy showed 63% of opponent-in-our-half ticks left a FREE SHOOTER and DEF emitted 49 no-op MARKs
+# per match — our "marking" defence was fiction (the marker idled while the man scored). With this ON every
+# MARK becomes a goal-side MOVE-cover that PHYSICALLY executes, so defenders actually get between the man
+# and our goal. Anti-swarm single-presser invariant is unaffected (cover is positioning, not a press).
+MARK_AS_MOVE_COVER = True
 
 
 def _mark_cmd(v: "View", opp: dict, tightness: str, reason: str, force_cover: bool = False):
@@ -332,7 +337,9 @@ def _mark_cmd(v: "View", opp: dict, tightness: str, reason: str, force_cover: bo
         ox, oy = _field_xy(opp)
         cx = ox - v.dir * _sx(0.12)     # goal-side of the attacker (our goal is in the -v.dir direction)
         cy = oy * 0.80                  # bias toward goal centre to sit in the shot lane
-        return _move(cx, cy, True, "cover " + reason)
+        cmd = _move(cx, cy, True, "cover " + reason)
+        cmd.parameters["target_player_id"] = _pid(opp)   # whom this cover is assigned to (coordination/no-double-mark)
+        return cmd
     return Cmd("MARK", {"target_player_id": _pid(opp), "tightness": tightness}, 3, reason)
 
 
@@ -1319,6 +1326,23 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
         if _is_fwd(slot):
             side = -1 if slot == FWD1 else 1
             return _move(v.dir * _sx(0.34), side * _sz(0.18), True, "restart forward lane")
+
+    # 0c) LOOSE-BALL CONTEST: when NEITHER team possesses, the ball is up for grabs.
+    #     Live-match replay showed we contested only 3% of loose-ball ticks (≈half the
+    #     match) — players held their anchor shape and let the ball sit. Win it instead:
+    #     the closest outfielder sprints onto the ball (PRESS in range); in OUR half a
+    #     2nd outfielder also collapses (defensive urgency). This does NOT violate the
+    #     anti-swarm single-presser rule — that guards swarming a CARRIER; here there is
+    #     no carrier, so contesting a free ball is pure, safe aggression.
+    if not v.we_have_ball and _on_ball_opp(v) is None and slot != GK and not tired:
+        others = [_hypot(*_field_xy(tm), *v.ball_xy) for tm in v.teammates
+                  if role_for_player(_pid(tm), formation) != GK]
+        closer = sum(1 for d in others if d < ball_d)
+        ball_in_our_half = _upfield(v, v.ball_xy[0]) < 0.0
+        if closer < (2 if ball_in_our_half else 1):
+            if ball_d <= _press_dist(cfg) * 1.3:
+                return Cmd("PRESS_BALL", {"intensity": 0.9}, 1, "contest loose ball")
+            return _move(v.ball_xy[0], v.ball_xy[1], True, "sprint to loose ball")
 
     # 1) DEF is a DEFENDER FIRST. Live #1 we played 0 MARK + 188 PRESS and got
     #    countered 4x. So DEF marks the most dangerous attacker by default and
