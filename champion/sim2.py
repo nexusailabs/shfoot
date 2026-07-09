@@ -33,7 +33,10 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import policy_v2 as P
+try:                                   # one canonical module object either way:
+    import champion.policy_v2 as P      # module run (`-m champion.sweep`) — SAME object sweep mutates
+except ModuleNotFoundError:             # script run (`python champion/sim2.py`)
+    import policy_v2 as P
 
 FIELD_X, FIELD_Y = 55.0, 35.0
 GOAL_MOUTH = 7.0
