@@ -137,9 +137,15 @@ To make the tree live: wire `Y_evade_recovery` as a selector playbook enabled fo
 
 ---
 
-## 8. Finishing calibration (the other half of the win formula)
-`calibrate_shots.py` has NEVER run on real FCTICK. us-on-target (3.2 win vs 1.7 loss) is half the formula.
-One FCTICK collection tomorrow → tune `GOAL_HALF_WIDTH` (1.0 untuned) + SHOOT power. Cheap, proven-only.
+## 8. Finishing calibration — RAN on real FCTICK (the other half of the win formula)
+us-on-target (3.2 win vs 1.7 loss) is half the formula. `calibrate_shots.py` ran on 2131 real ticks
+(250 shots, 102 goal-line crossings, 63 goals, baseline conversion 25%):
+- **`GOAL_HALF_WIDTH` real fit = 0.87** (from 80 crossings, 91% goal/miss separation) vs the shipped UNTUNED
+  estimate **1.0**. The real goal mouth is NARROWER. Candidate one-liner: `policy_v2.py:49` `1.0 → 0.87`.
+  ⚠️ Trade-off: this TIGHTENS the on-frame band (`SHOT_CENTER_BAND`/`SHOT_CLOSE_WIDE_BAND` are ×GOAL_HALF_WIDTH),
+  so it may cut shot VOLUME while raising quality. **A/B it live** (does us-on-target rise?), don't blind-edit —
+  it's a global shot-gate change, not flag-gated. Collect ≥10 aggressive matches' FCTICK to also fit SHOOT gates
+  (current sample too small: only 7 shots passed the tightest gate).
 
 ---
 
