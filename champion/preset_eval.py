@@ -92,6 +92,19 @@ PRESETS = {
         ("G", "RECOVERY_DEF_ENABLED", True), ("G", "RECOVERY_BALL_DEPTH", 0.20),
     ],
 
+    # GK fast-launch counter (Codex EV #1): GK possession vs a committed press -> long
+    # KICK to the most-advanced FWD instead of safe recycle. Codex-specced, self-built.
+    "GK_fastlaunch": [
+        ("G", "GK_FASTLAUNCH_ENABLED", True),
+    ],
+
+    # ★★ STACK: lead defence/retention + GK fast-launch attack initiation.
+    "YG_evade_recovery_gklaunch": [
+        ("G", "DRIBBLE_EVADE_ENABLED", True),
+        ("G", "RECOVERY_DEF_ENABLED", True), ("G", "RECOVERY_BALL_DEPTH", 0.20),
+        ("G", "GK_FASTLAUNCH_ENABLED", True),
+    ],
+
     # Best-guess COMBO: overload attack + recovery-solid defence.
     "Z_overload_plus_recovery": [
         ("R", "FWD1", "anchor_ax", 0.70), ("R", "FWD2", "anchor_ax", 0.70),
@@ -166,7 +179,7 @@ GOAL_OPP_X = 6.4   # home attacks +x
 def evaluate(rows):
     m = dict(shots=0, shot_dist=0.0, shot_power=0.0, direct=0, ground=0,
              fwd_depth=0.0, fwd_n=0, recover_cover=0, opp_deep=0,
-             loose_contest=0, loose=0, err=0, we_poss=0)
+             loose_contest=0, loose=0, err=0, we_poss=0, gk_launch=0)
     for r in rows:
         gs, poss, pt, b = to_gs(r)
         bx = b.get("x", 0)
@@ -181,6 +194,8 @@ def evaluate(rows):
             # on-ball carrier (we possess, this is the holder)
             if pt == "home" and poss == pid:
                 m["we_poss"] += 1
+                if pid == 0 and ct == "GK_DISTRIBUTE" and pr.get("method") == "KICK":
+                    m["gk_launch"] += 1
                 if ct == "SHOOT":
                     m["shots"] += 1
                     m["shot_dist"] += abs(GOAL_OPP_X - r["players"][pid]["x"])
@@ -229,14 +244,14 @@ def main():
             restore()
         results.append((score(m), name, m))
     results.sort(reverse=True)
-    hdr = f"{'preset':26s} {'shots':>5s} {'sdist':>6s} {'direct':>6s} {'fwdX':>6s} {'recov':>6s} {'loose':>6s} {'err':>4s} {'SCORE':>7s}"
+    hdr = f"{'preset':26s} {'shots':>5s} {'sdist':>6s} {'direct':>6s} {'fwdX':>6s} {'recov':>6s} {'gkLND':>6s} {'loose':>6s} {'err':>4s} {'SCORE':>7s}"
     print(hdr); print("-" * len(hdr))
     base = next(m for s, n, m in results if n == "A_sharp_counter")
     for s, name, m in results:
         avg_dist = (m["shot_dist"] / m["shots"]) if m["shots"] else 0
         favg = (m["fwd_depth"] / m["fwd_n"]) if m["fwd_n"] else 0
         print(f"{name:26s} {m['shots']:5d} {avg_dist:6.2f} {m['direct']:6d} {favg:6.2f} "
-              f"{m['recover_cover']:6d} {m['loose_contest']:6d} {m['err']:4d} {s:7.1f}")
+              f"{m['recover_cover']:6d} {m['gk_launch']:6d} {m['loose_contest']:6d} {m['err']:4d} {s:7.1f}")
     print(f"\nphases: we_poss={base['we_poss']} opp_deep={base['opp_deep']} loose={base['loose']}")
     print(f"WINNER (mechanism-score, RELATIVE only; validate top-3 live): {results[0][1]}")
 

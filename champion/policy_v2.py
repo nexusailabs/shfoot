@@ -320,6 +320,25 @@ EVADE_FORWARD = 0.16               # frac FIELD_X: forward progress kept while v
 RECOVERY_DEF_ENABLED = False
 RECOVERY_BALL_DEPTH = 0.15         # frac FIELD_X: ball must be this far into OUR half (attacking-frame) to recover
 
+# GK FAST-LAUNCH COUNTER (2026-07-10, Codex EV #1 +8-12pp). When the opponent is committed forward, the
+# GK launches the ball LONG to the most-advanced FWD/channel instead of the safe raw-success recycle —
+# turning a save / goal-kick into an immediate counter into the space behind. Flag-gated, default-OFF;
+# OFF = byte-identical (GK keeps its near-optimal THROW/KICK distribution). Risk: engine KICK accuracy.
+GK_FASTLAUNCH_ENABLED = False
+
+
+def _gk_fastlaunch_target(v: "View", opts: list, formation: str | None):
+    """Most-advanced forward teammate to launch to on a GK fast-break (None if none).
+    Scored like the counter carrier: upfield position + role bonus (FWD > MID > other)."""
+    cands = []
+    for o in opts:
+        if o["pid"] == GK or _forwardness(v, o["x"]) <= 0.0:
+            continue
+        recv_slot = role_for_player(o["pid"], formation)
+        role_bonus = 0.6 if _is_fwd(recv_slot) else (0.2 if _is_mid(recv_slot) else -1.0)
+        cands.append((_upfield(v, o["x"]) / FIELD_X + role_bonus, o["pid"]))
+    return max(cands, key=lambda c: c[0])[1] if cands else None
+
 # MARK-AS-MOVE-COVER (2026-06-26, CONFIRMED ROOT: the engine command breakdown shows MARK=0 across every
 # match despite DEF/drop-mark/recovery emitting MARK constantly — MARK is a NO-OP in this engine, so our
 # entire marking defence is fiction (the "marker" just idles -> 34% open shooter, concede unmoved). Only
@@ -1202,6 +1221,12 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
     if slot == GK:
         if v.i_have_ball:
             opts = calculate_pass_options(v.me_xy, v.teammates, v.opponents)
+            if GK_FASTLAUNCH_ENABLED:                 # fast-break vs a committed press
+                committed = sum(1 for o in v.opponents if _upfield(v, _field_xy(o)[0]) < 0.0)
+                if committed >= COUNTER_MIN_OPP_FORWARD and opts:
+                    _tgt = _gk_fastlaunch_target(v, opts, formation)
+                    if _tgt is not None:
+                        return Cmd("GK_DISTRIBUTE", {"target_player_id": _tgt, "method": "KICK"}, 0, "GK fast-launch counter")
             opts = [o for o in opts if _forwardness(v, o["x"]) > -_sx(0.09)] or opts
             if opts:
                 seed = _seed_int("gk", _ball_cell(v), tuple(sorted(o["pid"] for o in opts)))

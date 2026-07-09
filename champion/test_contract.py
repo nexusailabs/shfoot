@@ -788,6 +788,43 @@ def test_counter_team_coherent_and_safe():
     print("OK counter is team-coherent, stateless, and malformed-safe")
 
 
+def _gk_launch_state(committed=True):
+    # GK (home pid0) holds the ball deep. committed=True: TWO opponents in our half
+    # (x<0) -> fast-launch trigger; FWDs sit high (x=2.0/1.5) as launch targets.
+    away = ({0: (6.4, 0), 1: (-2.0, 0.3), 2: (-1.5, -0.4), 3: (4.0, 0.0), 4: (4.5, 0.5)} if committed
+            else {0: (6.4, 0), 1: (3.0, 0.3), 2: (2.5, -0.4), 3: (4.0, 0.0), 4: (4.5, 0.5)})
+    return _state((-6.0, 0.0), poss_aid="agentId_0", poss_team="home",
+                  home_pos={0: (-6.2, 0), 1: (-3.5, 0.2), 2: (-1.0, 0.0), 3: (2.0, -0.8), 4: (1.5, 0.8)},
+                  away_pos=away)
+
+
+def test_gk_fastlaunch():
+    # GK Fast-Launch Counter (flag-gated, default OFF). (a) OFF byte-identical;
+    # (b) ON + committed -> GK_DISTRIBUTE KICK to an advanced FWD; (c) ON but not
+    # committed -> unchanged; (d) malformed -> no raise.
+    assert P.GK_FASTLAUNCH_ENABLED is False, "must ship default OFF"
+    gs = _gk_launch_state(committed=True)
+    _clear_runtime_state()
+    off = P.command(gs, 0, 0)                              # (a) default-OFF capture
+    P.GK_FASTLAUNCH_ENABLED = True
+    try:
+        _clear_runtime_state()
+        on = P.command(gs, 0, 0)                           # (b) ON + committed
+        assert on["commandType"] == "GK_DISTRIBUTE" and on["parameters"]["method"] == "KICK", on
+        assert on["parameters"]["target_player_id"] in (3, 4), ("must launch to a FWD", on)
+        gs_nc = _gk_launch_state(committed=False)           # (c) ON but not committed
+        _clear_runtime_state(); nc_on = P.command(gs_nc, 0, 0)
+        _clear_runtime_state(); P.GK_FASTLAUNCH_ENABLED = False; nc_off = P.command(gs_nc, 0, 0)
+        P.GK_FASTLAUNCH_ENABLED = True
+        assert nc_on == nc_off, ("uncommitted must be unchanged", nc_on, nc_off)
+        P.command({"players": [], "ball": {}}, 0, 0)        # (d) malformed -> no raise
+    finally:
+        P.GK_FASTLAUNCH_ENABLED = False
+    _clear_runtime_state()
+    assert P.command(gs, 0, 0) == off, "flag OFF must be byte-identical to pre-change"
+    print("OK GK fast-launch: KICK to advanced FWD when committed; off/uncommitted byte-identical; safe")
+
+
 if __name__ == "__main__":
     test_duplicate_agentid_possession_team()
     test_duplicate_agentid_nearest_ball()
@@ -832,4 +869,6 @@ if __name__ == "__main__":
     test_counter_forwards_sprint_high()
     test_counter_preserves_invariants()
     test_counter_team_coherent_and_safe()
+    # --- GK fast-launch counter (flag-gated, default-OFF, fail-safe) ---
+    test_gk_fastlaunch()
     print("\nALL CONTRACT TESTS PASSED")
