@@ -825,6 +825,60 @@ def test_gk_fastlaunch():
     print("OK GK fast-launch: KICK to advanced FWD when committed; off/uncommitted byte-identical; safe")
 
 
+def _creation_aerial_state(in_behind=True):
+    # Sustained/open-play possession: home MID holds in the opponent half, far enough
+    # from goal that the shoot/carry-to-shoot branches do not pre-empt pass creation.
+    # FWD1 is either genuinely beyond the last outfield line or just in front of it.
+    fwd_x = 5.2 if in_behind else 4.6
+    return _state((1.2, 0.0), poss_aid="agentId_2", poss_team="home",
+                  home_pos={0: (-6.4, 0), 1: (-2.5, 0), 2: (1.2, 0.0),
+                            3: (fwd_x, -1.0), 4: (2.0, 1.0)},
+                  away_pos={0: (6.4, 0), 1: (4.8, -0.5), 2: (4.7, 0.5),
+                            3: (4.6, 0.0), 4: (3.0, 1.2)}) | {"gameTime": 40.0}
+
+
+def test_creation_aerial_inbehind():
+    # Sustained-possession AERIAL creation (flag-gated, default OFF). (a) OFF is
+    # byte-identical on this possession state + golden states; (b) ON + a FWD
+    # genuinely behind the last outfield line -> PASS type AERIAL to that FWD;
+    # (c) ON but no in-behind runner -> unchanged; (d) malformed -> no raise.
+    assert P.CREATION_AERIAL_ENABLED is False, "must ship default OFF"
+    gs = _creation_aerial_state(in_behind=True)
+    _clear_runtime_state()
+    off = P.command(gs, 0, 2)
+    golden_off = []
+    for g, team, pid, formation in _GOLDEN:
+        _clear_runtime_state()
+        golden_off.append(P.command(g, team, pid, formation))
+
+    P.CREATION_AERIAL_ENABLED = True
+    try:
+        _clear_runtime_state()
+        on = P.command(gs, 0, 2)
+        assert on["commandType"] == "PASS", on
+        assert on["parameters"] == {"target_player_id": 3, "type": "AERIAL"}, on
+
+        gs_no = _creation_aerial_state(in_behind=False)
+        _clear_runtime_state()
+        no_on = P.command(gs_no, 0, 2)
+        P.CREATION_AERIAL_ENABLED = False
+        _clear_runtime_state()
+        no_off = P.command(gs_no, 0, 2)
+        P.CREATION_AERIAL_ENABLED = True
+        assert no_on == no_off, ("no in-behind runner must be unchanged", no_on, no_off)
+
+        P.command({"players": [], "ball": {}}, 0, 2)
+    finally:
+        P.CREATION_AERIAL_ENABLED = False
+
+    _clear_runtime_state()
+    assert P.command(gs, 0, 2) == off, "flag OFF must be byte-identical to pre-change"
+    for (g, team, pid, formation), expected in zip(_GOLDEN, golden_off):
+        _clear_runtime_state()
+        assert P.command(g, team, pid, formation) == expected, ("golden flag OFF changed", pid)
+    print("OK creation aerial: OFF byte-identical; ON lofts to in-behind FWD; no-runner/malformed safe")
+
+
 if __name__ == "__main__":
     test_duplicate_agentid_possession_team()
     test_duplicate_agentid_nearest_ball()
@@ -871,4 +925,6 @@ if __name__ == "__main__":
     test_counter_team_coherent_and_safe()
     # --- GK fast-launch counter (flag-gated, default-OFF, fail-safe) ---
     test_gk_fastlaunch()
+    # --- sustained-possession aerial creation (flag-gated, default-OFF, fail-safe) ---
+    test_creation_aerial_inbehind()
     print("\nALL CONTRACT TESTS PASSED")

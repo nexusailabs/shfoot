@@ -296,6 +296,7 @@ COUNTER_CARRY_STEP = 0.30          # sprint-carry step (frac FIELD_X) when no in
 # --------------------------------------------------------------------------- #
 INBEHIND_RUN_ENABLED = False       # lever A: FWD final-third run target goes BEYOND the last outfield line
 THROUGHBALL_EV_ENABLED = False     # lever B: surface + EV-reward a through-ball to a runner in behind
+CREATION_AERIAL_ENABLED = False    # lever C: loft an AERIAL ball over the last line to an in-behind FWD
 THROUGHBALL_EV_WEIGHT = 0.5        # EV weight on an in-behind receiver (only used when lever B is ON)
 
 # TACKLE-EVASION dribble (2026-06-26, from observing strong teams: they dribble AROUND tacklers,
@@ -972,6 +973,10 @@ def _counter_carry_y(v: View) -> float:
     return best_y
 
 
+def _counter_aerial_success(dist: float) -> float:
+    return max(0.05, 1.0 - dist / _sx(3.2))
+
+
 def _counter_carrier_cmd(v: View, scored_opts: list, formation: str | None, t: dict):
     """Carrier on a counter: the FASTEST forward ball, never a backward recycle.
     A DIRECT through-ball to the most advanced open teammate in the space behind,
@@ -996,7 +1001,7 @@ def _counter_carrier_cmd(v: View, scored_opts: list, formation: str | None, t: d
         if is_long:
             # LONG BALL over the top: a loft clears ground interceptors, so score it on DISTANCE
             # only (calculate_pass_options' ground-lane risk does not apply to an aerial).
-            succ = max(0.05, 1.0 - o["dist"] / _sx(3.2))
+            succ = _counter_aerial_success(o["dist"])
             if succ < COUNTER_AERIAL_MIN_SUCCESS:
                 continue
         else:
@@ -1018,6 +1023,34 @@ def _counter_carrier_cmd(v: View, scored_opts: list, formation: str | None, t: d
     ty = _counter_carry_y(v)
     tx, ty = _apply_attack_tactics(v, tx, ty, t)
     return _move(tx, ty, True, "COUNTER sprint-carry")
+
+
+def _creation_aerial_option(v: View, opts: list, formation: str | None):
+    """Sustained-possession space-ball: FWD already beyond the last outfield line.
+
+    Uses the exact counter long-ball test and distance-only success: in-behind,
+    AERIAL-or-long, then COUNTER_AERIAL_MIN_SUCCESS. Ground lane success/risk is
+    intentionally ignored for the lofted ball.
+    """
+    try:
+        last_line = max((_upfield(v, _field_xy(op)[0]) for op in v.opponents if _pid(op) != GK), default=0.0)
+        cands = []
+        for o in opts:
+            if not _is_fwd(role_for_player(o["pid"], formation)):
+                continue
+            in_behind = _upfield(v, o["x"]) > last_line
+            is_long = in_behind and (o["type"] == "AERIAL" or o["dist"] >= _sx(COUNTER_LONGBALL_DIST))
+            if not is_long:
+                continue
+            succ = _counter_aerial_success(o["dist"])
+            if succ < COUNTER_AERIAL_MIN_SUCCESS:
+                continue
+            cands.append((succ, _upfield(v, o["x"]), o))
+        if cands:
+            return max(cands, key=lambda item: (item[0], item[1]))[2]
+    except Exception:
+        return None
+    return None
 
 
 def _counter_support_run(v: View, slot: int):
@@ -1317,6 +1350,12 @@ def decide(game_state: dict, team_id: int, my_id: int, formation: str | None = N
             cc = _counter_carrier_cmd(v, scored_opts, formation, t)
             if cc is not None:
                 return cc
+
+        if CREATION_AERIAL_ENABLED:
+            aerial = _creation_aerial_option(v, opts, formation)
+            if aerial is not None:
+                return Cmd("PASS", {"target_player_id": aerial["pid"], "type": "AERIAL"}, 0,
+                           f"creation aerial->{aerial['pid']} d={round(aerial['dist'],1)}")
 
         chance_opts = [
             (o, s) for o, s in scored_opts

@@ -71,6 +71,7 @@ PRESETS = {
     "F_creation_max": [
         ("G", "INBEHIND_RUN_ENABLED", True), ("G", "THROUGHBALL_EV_ENABLED", True),
         ("G", "THROUGHBALL_EV_WEIGHT", 0.8), ("G", "COUNTER_THROUGH_MIN_SUCCESS", 0.44),
+        ("G", "CREATION_AERIAL_ENABLED", True),   # lever C: loft over the line (Codex Q2 fix)
     ],
 
     # Evade-retention: dribble around the tackler instead of straight carries.
