@@ -171,11 +171,13 @@ contract-tested). Highest upside of anything in the portfolio; unverified engine
 the same "cut free-shooters" mechanism WITHOUT a formation change — the evidence-safe version. (Real-match data
 outranks a mechanism estimate when they disagree.)
 
-**Q2 (creation levers) — over-gated, NOT disproven:** the through-ball needs `success>0.50` but a defended
-in-behind lane computes ~0.43 (`policy_v2.py:620` pass math; real tick `_build/ticks_counter_off.jsonl:67`).
-So `F_creation_max` now ALSO lowers `COUNTER_THROUGH_MIN_SUCCESS→0.44` (else the flags are inert). Codex's
-better fix: add an aerial/space-ball path (distance-only success, like the counter long-ball at `:976-994`) —
-a follow-up if F shows life live.
+**Q2 (creation levers) — over-gated, NOT disproven → FIXED:** the through-ball needs `success>0.50` but a
+defended in-behind lane computes ~0.43. So `F_creation_max` lowers `COUNTER_THROUGH_MIN_SUCCESS→0.44` AND
+now enables the **built aerial path** `CREATION_AERIAL_ENABLED` (`policy_v2.py:299`, default OFF, contract-tested):
+during sustained possession, loft an AERIAL over the last line to a FWD in behind, scored on distance only
+(bypasses the ground gate; placed after SHOOT+counter so it never pre-empts a shot). Proof it fires: on an
+in-behind state the carrier switches PASS GROUND→AERIAL; real-corpus direct-balls 89→93. This is the ATTACK
+half of the win formula (us-on-target). Deploy candidate: `F_creation_max` (in-behind run + gate + aerial).
 
 **Q3 endpoint EV (unexplored surface, ranked):** 1) GK fast-launch (built), 2) keeper-away aim (make far-post
 explicit; engine-unverified), 3) INTERCEPT for loose balls only — NOT as a carrier presser (swarm risk),
