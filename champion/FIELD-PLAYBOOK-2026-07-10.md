@@ -190,3 +190,48 @@ My live-data adjustment: promote retention (EVADE 50% arm) into the lead combo `
 
 **FINAL tomorrow order:** baseline → `Y_evade_recovery` → `GK_fastlaunch` (stack on Y) → `F_creation_max`(gated) /
 `E_patient_finish`. Judge every arm on opp-on-target↓ + free-shooter%↓, not scoreline. DEFAULT is always rollback.
+
+---
+
+## 10. ⚠️ ADVERSARIAL CORRECTION (Fable-5 refutation, 2026-07-10 — READ THIS, it overrides §0-§9 claims)
+
+An independent adversarial pass demolished the core narrative. Verified true by re-computation. **Retract the
+overclaims; the plan below is what actually holds.**
+
+**REFUTED / retracted:**
+1. **"Win formula = cut opp on-target" is a TAUTOLOGY.** `opp_on_target == opp_goals` in **65/67** matches (the
+   engine has ~no saves). "Win when opp on-target ≤2" literally means "win when opp scores ≤2" = the definition
+   of winning. It is NOT a mechanism/lever. (And possession WIN 54.5% < LOSS 56.5% → the "retain the ball"
+   claim is backwards; the "over-press loses" gap vanishes after normalizing command shares.)
+2. **No preset is statistically distinguishable from DEFAULT.** Wilson CIs all overlap; Fisher EVADE-vs-BASELINE
+   p=0.61. Real DEFAULT arm = 5W-1D-6L (42%) ≈ EVADE 7W-2D-7L (44%). The "27-9-44 baseline" was the POOLED
+   total including the compared arms, not a baseline. So **`Y_evade_recovery` has no basis as "the lead"**, and
+   **2-1-1's rejection (n=3) is the same underpowered error §5 condemns.** (recovery even conceded 3.38 ≈ baseline
+   3.36 live — zero effect — while the "worse" MOVECOVER conceded 2.75.)
+3. **GK fast-launch + aerial rest on UNVALIDATED engine semantics.** No long KICK to a distant FWD, and no
+   AERIAL pass, has ever been observed completing (27 PASS total across 58 matches; 42 emitted zero). Precedent:
+   MARK was a silent engine NO-OP (`policy_v2.py:343`). These levers may be dead / turnover-generators live.
+4. **preset_eval frozen-replay predicts REACHABILITY, not outcomes** (no closed loop, opponent never reacts,
+   ~1s latency unmodeled, velocities zeroed, 48% ticks have null possession). Its flagship "recovery +19%"
+   produced ZERO live conceded-goal change. Do not call it "the trustworthy signal" for outcomes.
+5. **n=2 live A/B is statistically void** (SE of a 2-match conceded mean ≈ 1.17 goals; target effect ~1.9 is
+   undetectable). A morning "judge-by-mechanism" arm tournament will select by coin-flip and can de-select
+   DEFAULT for a worse config. Plus 22% of match telemetry returned null, and all evidence is vs 3 fixed
+   practice bots — tournament opponents are other participants' bots (unsampled).
+
+**What SURVIVES (keep):** the sweep-void / broken-instrument finding (real, correctly handled); we do win
+balanced/defensive comfortably; **DEFAULT (a742108) is the robust proven config**; the rollback-to-DEFAULT
+discipline is the single strongest part of the plan.
+
+**REVISED PLAN (this replaces §0's deploy ladder):**
+- **SHIP DEFAULT (a742108).** No lever is shown to beat it. The presets are OPTIONS, not a ranked ladder — do
+  NOT flip-flop between statistically-identical configs during the tournament.
+- **ONE useful morning experiment (not an A/B tournament):** enable GK_fastlaunch + aerial for ONE throwaway
+  match with FCTICK and check the BALL ACTUALLY TRAVELS to the target FWD (MARK-style no-op check). If yes →
+  likely-harmless free upside, may keep ON. If it no-ops / turns over → OFF (vaporware). Do NOT stack them onto
+  the shipped config before this check.
+- **Judge metric:** NOT scoreline and NOT opp-on-target (tautology). Only FCTICK free-shooter% + turnover count,
+  and treat even that as noisy — don't over-trust any 2-match result.
+- **Selector default = DEFAULT for any opponent that doesn't cleanly match the 3 practice archetypes.**
+- The honest expectation: aggressive is a ~40% coin-flip and no analysis here has moved that. Compete with the
+  robust DEFAULT, use the rollback, and don't let noise talk you into a worse config.
